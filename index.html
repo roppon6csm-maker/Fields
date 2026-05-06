@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -77,6 +78,7 @@
             const [animationProgress, setAnimationProgress] = useState(0);
             const [hasViewedMine, setHasViewedMine] = useState(false);
             const [copySuccess, setCopySuccess] = useState(false);
+            const [isAdminOnly, setIsAdminOnly] = useState(false);
 
             useEffect(() => {
                 auth.onAuthStateChanged(async (u) => {
@@ -104,10 +106,10 @@
                     const list = []; s.forEach(d => list.push(d.data()));
                     setParticipants(list);
                     const me = list.find(p => p.uid === user.uid);
-                    if (me && step === 'register') setStep('lobby');
+                    if ((me || isAdminOnly) && step === 'register') setStep('lobby');
                 });
                 return () => { unsubR(); unsubP(); };
-            }, [user, room?.id, step]);
+            }, [user, room?.id, step, isAdminOnly]);
 
             const createRoom = async (config) => {
                 const rid = Math.random().toString(36).substring(2, 8).toUpperCase();
@@ -139,6 +141,7 @@
             };
 
             const addLine = async (idx, yp) => {
+                if (isAdminOnly) return;
                 const me = participants.find(p => p.uid === user.uid);
                 if (me && me.lines?.length < 2) {
                     await db.doc(`artifacts/${DATABASE_APP_ID}/public/data/rooms/${room.id}/participants/${user.uid}`).update({
@@ -162,8 +165,9 @@
                 setAnimatingUsers(targets);
                 setAnimationProgress(0);
                 const start = performance.now();
+                const duration = 2800;
                 const animate = (t) => {
-                    const p = Math.min((t - start) / 2800, 1);
+                    const p = Math.min((t - start) / duration, 1);
                     setAnimationProgress(p);
                     if (p < 1) requestAnimationFrame(animate);
                 };
@@ -177,7 +181,7 @@
 
             return (
                 <div className="min-h-dvh flex flex-col max-w-md mx-auto relative px-3 py-3 bg-slate-50 overflow-hidden">
-                    <div className="fixed top-2 right-2 z-50 text-[10px] font-mono text-slate-300">ver.1.0.1</div>
+                    <div className="fixed top-2 right-2 z-50 text-[10px] font-mono text-slate-300">ver.1.0.2</div>
                     {error && <div className="bg-red-500 text-white p-3 rounded-xl mb-2 text-xs font-bold">{error}</div>}
 
                     {step === 'home' && (
@@ -229,7 +233,17 @@
                                     </div>
                                 </div>
                             </div>
-                            <button onClick={register} className="bg-blue-600 text-white font-black py-4 rounded-xl shadow-xl mt-auto">参加！</button>
+                            <div className="mt-auto space-y-3">
+                                <button onClick={register} className="w-full bg-blue-600 text-white font-black py-4 rounded-xl shadow-xl">参加！</button>
+                                {room.creatorUid === user.uid && (
+                                    <button 
+                                        onClick={() => { setIsAdminOnly(true); setStep('lobby'); }}
+                                        className="w-full text-slate-400 text-[11px] font-bold underline decoration-dotted"
+                                    >
+                                        管理者として参加
+                                    </button>
+                                )}
+                            </div>
                         </div>
                     )}
 
@@ -247,7 +261,9 @@
                             <div className="flex-1 bg-white rounded-[2rem] border-2 border-slate-100 relative flex flex-col overflow-hidden">
                                 {step === 'lobby' && (
                                     <div className="p-2 border-b border-slate-50 flex items-center justify-between bg-slate-50/30 shrink-0">
-                                        <span className="text-[9px] font-black text-blue-600">{myL < 2 ? `あと ${2-myL} 本引けます` : '準備完了！'}</span>
+                                        <span className="text-[9px] font-black text-blue-600">
+                                            {isAdminOnly ? "管理者モード（進行管理）" : (myL < 2 ? `あと ${2-myL} 本引けます` : '準備完了！')}
+                                        </span>
                                         <span className="text-[9px] font-black text-slate-400">{participants.length} / {room.lineCount} 人参加中</span>
                                     </div>
                                 )}
@@ -256,7 +272,7 @@
                                         let cur = idx; const p = [{x:idx, y:0}]; const lines = participants.flatMap(x=>x.lines||[]).sort((a,b)=>a.y-b.y);
                                         lines.forEach(l => { if(l.lineIndex===cur){ p.push({x:cur,y:l.y}); cur++; p.push({x:cur,y:l.y}); } else if(l.lineIndex===cur-1){ p.push({x:cur,y:l.y}); cur--; p.push({x:cur,y:l.y}); } });
                                         p.push({x:cur,y:100}); return {path:p};
-                                    }} myL={myL} />
+                                    }} myL={myL} isAdminOnly={isAdminOnly} />
                                 </div>
                                 <div className="p-3 bg-slate-50 border-t shrink-0">
                                     {step === 'lobby' ? (
@@ -264,8 +280,11 @@
                                         : <p className="text-center text-[10px] font-bold text-slate-400 animate-pulse py-1">管理者の開始を待機中...</p>
                                     ) : (
                                         <div className="space-y-2">
-                                            {!hasViewedMine ? <button onClick={()=>{setAnimatingUsers([myP]); setAnimationProgress(0); setHasViewedMine(true); const s=performance.now(); const a=(t)=>{const p=Math.min((t-s)/2800, 1); setAnimationProgress(p); if(p<1) requestAnimationFrame(a);}; requestAnimationFrame(a);}} className="w-full bg-blue-600 text-white py-4 rounded-xl font-black">自分の結果を見る</button>
-                                            : <button onClick={()=>{setAnimatingUsers(participants); setAnimationProgress(0); const s=performance.now(); const a=(t)=>{const p=Math.min((t-s)/3500, 1); setAnimationProgress(p); if(p<1) requestAnimationFrame(a);}; requestAnimationFrame(a);}} className="w-full bg-slate-900 text-white py-4 rounded-xl font-black">全員の結果を一斉に見る</button>}
+                                            {!isAdminOnly && !hasViewedMine ? (
+                                                <button onClick={()=>{setAnimatingUsers([myP]); setAnimationProgress(0); setHasViewedMine(true); const s=performance.now(); const a=(t)=>{const p=Math.min((t-s)/2800, 1); setAnimationProgress(p); if(p<1) requestAnimationFrame(a);}; requestAnimationFrame(a);}} className="w-full bg-blue-600 text-white py-4 rounded-xl font-black">自分の結果を見る</button>
+                                            ) : (
+                                                <button onClick={()=>{setAnimatingUsers(participants); setAnimationProgress(0); const s=performance.now(); const a=(t)=>{const p=Math.min((t-s)/3500, 1); setAnimationProgress(p); if(p<1) requestAnimationFrame(a);}; requestAnimationFrame(a);}} className="w-full bg-slate-900 text-white py-4 rounded-xl font-black shadow-xl animate-in fade-in active:scale-95 transition-all">全員の結果を一斉に見る</button>
+                                            )}
                                         </div>
                                     )}
                                 </div>
@@ -280,18 +299,7 @@
             const [lineCount, setLineCount] = useState(4);
             const [title, setTitle] = useState('');
             const [items, setItems] = useState(Array(4).fill(''));
-
-            useEffect(() => {
-                setItems(prev => {
-                    const next = [...prev];
-                    if (next.length < lineCount) {
-                        return [...next, ...Array(lineCount - next.length).fill('')];
-                    } else {
-                        return next.slice(0, lineCount);
-                    }
-                });
-            }, [lineCount]);
-
+            useEffect(() => { setItems(prev => { const next = [...prev]; if (next.length < lineCount) return [...next, ...Array(lineCount - next.length).fill('')]; return next.slice(0, lineCount); }); }, [lineCount]);
             return (
                 <div className="flex-1 flex flex-col space-y-4 animate-in slide-in-from-right-4 h-full">
                     <div className="flex items-center space-x-3"><button onClick={onCancel} className="p-2 bg-white rounded-full border">←</button><h2 className="text-xl font-black">あみだを作成</h2></div>
@@ -313,15 +321,12 @@
                             </div>
                         </div>
                     </div>
-                    <button onClick={() => {
-                        if(title && !items.some(x=>!x)) onCreate({title, lineCount, items});
-                        else alert("タイトルと全ての結果を入力してください");
-                    }} className="bg-blue-600 text-white font-black py-4 rounded-xl shadow-lg mt-auto active:scale-95 transition-all">公開してお友達を呼ぶ</button>
+                    <button onClick={() => { if(title && !items.some(x=>!x)) onCreate({title, lineCount, items}); else alert("タイトルと全ての結果を入力してください"); }} className="bg-blue-600 text-white font-black py-4 rounded-xl shadow-lg mt-auto active:scale-95 transition-all">公開してお友達を呼ぶ</button>
                 </div>
             );
         }
 
-        function AmidaBoard({ room, participants, onAddLine, myUid, animatingUsers, animationProgress, tracePath, myL }) {
+        function AmidaBoard({ room, participants, onAddLine, myUid, animatingUsers, animationProgress, tracePath, myL, isAdminOnly }) {
             const containerRef = useRef(null);
             const [dim, setDim] = useState({ w: 0, h: 0 });
             useEffect(() => { const up = () => { if(containerRef.current) setDim({w:containerRef.current.clientWidth, h:containerRef.current.clientHeight}); }; up(); window.addEventListener('resize', up); return ()=>window.removeEventListener('resize', up); }, []);
@@ -329,7 +334,7 @@
 
             return (
                 <div ref={containerRef} className="w-full h-full p-2" onPointerDown={(e)=>{
-                    if(!dim.w || myL >= 2) return;
+                    if(isAdminOnly || !dim.w || myL >= 2) return;
                     const r = containerRef.current.getBoundingClientRect();
                     const x = e.clientX - r.left, y = e.clientY - r.top;
                     const p = 30, s = (dim.w - (p * 2)) / (room.lineCount - 1);
@@ -343,8 +348,8 @@
                     <svg className="w-full h-full">
                         {Array.from({length: room.lineCount}).map((_,i) => {
                             const p = participants.find(x=>x.startIndex===i);
-                            const isMe = p?.uid === myUid;
-                            const h = isMe && myL < 2;
+                            const isMyLine = p?.uid === myUid;
+                            const h = !isAdminOnly && isMyLine && myL < 2;
                             const av = p ? AVATARS.find(a=>a.id===p.avatarId) : null;
                             return <g key={i}>
                                 <line x1={getX(i)} y1="40" x2={getX(i)} y2={dim.h-40} stroke={h?"#3b82f6":"#f1f5f9"} strokeWidth={h?"5":"3"} strokeLinecap="round" />
@@ -357,11 +362,7 @@
                             if(!p) return null;
                             const {path} = tracePath(p.startIndex); const t = path.length, idx = Math.floor(animationProgress*(t-1)), rem = (animationProgress*(t-1))%1;
                             let cx = getX(path[idx].x), cy = 40 + (path[idx].y/100)*(dim.h-80);
-                            if(idx < t-1){
-                                const p2 = path[idx+1];
-                                cx += (getX(p2.x)-cx)*rem;
-                                cy += ((40+(p2.y/100)*(dim.h-80))-cy)*rem;
-                            }
+                            if(idx < t-1){ const p2 = path[idx+1]; cx += (getX(p2.x)-cx)*rem; cy += ((40+(p2.y/100)*(dim.h-80))-cy)*rem; }
                             const av = AVATARS.find(a=>a.id===p.avatarId) || AVATARS[0];
                             return <image key={p.uid} href={av.chibi} x={cx-18} y={cy-18} width="36" height="36" className="drop-shadow-md" />;
                         })}
@@ -375,3 +376,4 @@
     </script>
 </body>
 </html>
+
