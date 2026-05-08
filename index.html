@@ -47,7 +47,9 @@
         const DATABASE_APP_ID = "papikko-song-amida"; 
 
         // Initialize Firebase
-        firebase.initializeApp(firebaseConfig);
+        if (firebaseConfig.apiKey) {
+            firebase.initializeApp(firebaseConfig);
+        }
         const auth = firebase.auth();
         const db = firebase.firestore();
 
@@ -161,19 +163,6 @@
                 setTimeout(() => setCopySuccess(false), 2000);
             };
 
-            const startAnimation = (targets) => {
-                setAnimatingUsers(targets);
-                setAnimationProgress(0);
-                const start = performance.now();
-                const duration = 2800;
-                const animate = (t) => {
-                    const p = Math.min((t - start) / duration, 1);
-                    setAnimationProgress(p);
-                    if (p < 1) requestAnimationFrame(animate);
-                };
-                requestAnimationFrame(animate);
-            };
-
             if (loading) return <div className="flex items-center justify-center h-dvh bg-slate-50"><div className="loader"></div></div>;
 
             const myP = participants.find(p => p.uid === user.uid);
@@ -181,7 +170,7 @@
 
             return (
                 <div className="min-h-dvh flex flex-col max-w-md mx-auto relative px-3 py-3 bg-slate-50 overflow-hidden">
-                    <div className="fixed top-2 right-2 z-50 text-[10px] font-mono text-slate-300">ver.1.0.4</div>
+                    <div className="fixed top-2 right-2 z-50 text-[10px] font-mono text-slate-300">ver.1.0.5</div>
                     {error && <div className="bg-red-500 text-white p-3 rounded-xl mb-2 text-xs font-bold">{error}</div>}
 
                     {step === 'home' && (
@@ -249,7 +238,7 @@
 
                     {(step === 'lobby' || step === 'result') && (
                         <div className="flex-1 flex flex-col space-y-2 h-full overflow-hidden">
-                            <div className="flex justify-between items-center px-1">
+                            <div className="flex justify-between items-center px-1 shrink-0">
                                 <div className="flex-1 min-w-0">
                                     <h2 className="text-lg font-black truncate text-slate-800">{room.title}</h2>
                                     <div className="flex items-center space-x-2">
@@ -267,12 +256,8 @@
                                         <span className="text-[9px] font-black text-slate-400">{participants.length} / {room.lineCount} 人参加中</span>
                                     </div>
                                 )}
-                                <div className="flex-1 relative">
-                                    <AmidaBoard room={room} participants={participants} onAddLine={addLine} myUid={user.uid} animatingUsers={animatingUsers} animationProgress={animationProgress} tracePath={(idx) => {
-                                        let cur = idx; const p = [{x:idx, y:0}]; const lines = participants.flatMap(x=>x.lines||[]).sort((a,b)=>a.y-b.y);
-                                        lines.forEach(l => { if(l.lineIndex===cur){ p.push({x:cur,y:l.y}); cur++; p.push({x:cur,y:l.y}); } else if(l.lineIndex===cur-1){ p.push({x:cur,y:l.y}); cur--; p.push({x:cur,y:l.y}); } });
-                                        p.push({x:cur,y:100}); return {path:p};
-                                    }} myL={myL} isAdminOnly={isAdminOnly} />
+                                <div className="flex-1 relative overflow-hidden">
+                                    <AmidaBoard room={room} participants={participants} onAddLine={addLine} myUid={user.uid} animatingUsers={animatingUsers} animationProgress={animationProgress} myL={myL} isAdminOnly={isAdminOnly} />
                                 </div>
                                 <div className="p-3 bg-slate-50 border-t shrink-0">
                                     {step === 'lobby' ? (
@@ -301,8 +286,8 @@
             const [items, setItems] = useState(Array(4).fill(''));
             useEffect(() => { setItems(prev => { const next = [...prev]; if (next.length < lineCount) return [...next, ...Array(lineCount - next.length).fill('')]; return next.slice(0, lineCount); }); }, [lineCount]);
             return (
-                <div className="flex-1 flex flex-col space-y-4 animate-in slide-in-from-right-4 h-full">
-                    <div className="flex items-center space-x-3"><button onClick={onCancel} className="p-2 bg-white rounded-full border">←</button><h2 className="text-xl font-black">あみだを作成</h2></div>
+                <div className="flex-1 flex flex-col space-y-4 animate-in slide-in-from-right-4 h-full overflow-hidden">
+                    <div className="flex items-center space-x-3 shrink-0"><button onClick={onCancel} className="p-2 bg-white rounded-full border">←</button><h2 className="text-xl font-black">あみだを作成</h2></div>
                     <div className="bg-white p-5 rounded-[2rem] space-y-5 shadow-sm border flex-1 overflow-y-auto no-scrollbar">
                         <div>
                             <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1 block">タイトル</label>
@@ -321,28 +306,44 @@
                             </div>
                         </div>
                     </div>
-                    <button onClick={() => { if(title && !items.some(x=>!x)) onCreate({title, lineCount, items}); else alert("タイトルと全ての結果を入力してください"); }} className="bg-blue-600 text-white font-black py-4 rounded-xl shadow-lg mt-auto active:scale-95 transition-all">公開してお友達を呼ぶ</button>
+                    <button onClick={() => { if(title && !items.some(x=>!x)) onCreate({title, lineCount, items}); else alert("タイトルと全ての結果を入力してください"); }} className="bg-blue-600 text-white font-black py-4 rounded-xl shadow-lg shrink-0 mt-2 active:scale-95 transition-all">公開してお友達を呼ぶ</button>
                 </div>
             );
         }
 
-        function AmidaBoard({ room, participants, onAddLine, myUid, animatingUsers, animationProgress, tracePath, myL, isAdminOnly }) {
+        function AmidaBoard({ room, participants, onAddLine, myUid, animatingUsers, animationProgress, myL, isAdminOnly }) {
             const containerRef = useRef(null);
             const [dim, setDim] = useState({ w: 0, h: 0 });
-            useEffect(() => { const up = () => { if(containerRef.current) setDim({w:containerRef.current.clientWidth, h:containerRef.current.clientHeight}); }; up(); window.addEventListener('resize', up); return ()=>window.removeEventListener('resize', up); }, []);
+            
+            useEffect(() => {
+                const up = () => { if(containerRef.current) setDim({w:containerRef.current.clientWidth, h:containerRef.current.clientHeight}); };
+                up();
+                const obs = new ResizeObserver(up);
+                if (containerRef.current) obs.observe(containerRef.current);
+                return () => obs.disconnect();
+            }, []);
+
             const getX = (i) => { const p = 30; return p + i * ((dim.w - (p * 2)) / (room.lineCount - 1)); };
 
-            // 当選者のニックネームをスロットごとにマッピングする計算
-            const winnerMap = useMemo(() => {
-                if (room.status === 'open') return {};
+            // アニメーション中のユーザーのゴール地点をマッピング（名前表示用）
+            const revealedWinnerMap = useMemo(() => {
+                // アニメーションが完了（progress === 1）している時のみ、ゴール地点に名前を紐付ける
+                if (room.status === 'open' || animatingUsers.length === 0 || animationProgress < 1) return {};
+                
                 const map = {};
-                participants.forEach(p => {
-                    const { path } = tracePath(p.startIndex);
-                    const finalIndex = path[path.length - 1].x;
-                    map[finalIndex] = p.nickname;
+                const allLines = participants.flatMap(p => p.lines || []).sort((a, b) => a.y - b.y);
+                
+                // 「現在アニメーションを終えたユーザー」のみを対象にする
+                animatingUsers.forEach(p => {
+                    let cur = p.startIndex;
+                    allLines.forEach(l => {
+                        if (l.lineIndex === cur) cur++;
+                        else if (l.lineIndex === cur - 1) cur--;
+                    });
+                    map[cur] = p.nickname;
                 });
                 return map;
-            }, [room.status, participants, tracePath]);
+            }, [room.status, animatingUsers, participants, animationProgress]);
 
             return (
                 <div ref={containerRef} className="w-full h-full p-2" onPointerDown={(e)=>{
@@ -353,36 +354,42 @@
                     const idx = Math.floor((x - p + (s/2)) / s);
                     const nearestIdx = Math.max(0, Math.min(idx, room.lineCount - 2));
                     if (nearestIdx >= 0) {
-                        const yp = Math.round(((y - 40) / (dim.h - 80)) * 100);
+                        const yp = Math.round(((y - 40) / (dim.h - 95)) * 100);
                         if (yp > 5 && yp < 95) onAddLine(nearestIdx, yp);
                     }
                 }} style={{ touchAction: 'none' }}>
-                    <svg className="w-full h-full">
+                    <svg className="w-full h-full" style={{ overflow: 'visible' }}>
                         {Array.from({length: room.lineCount}).map((_,i) => {
                             const p = participants.find(x=>x.startIndex===i);
-                            const isMe = p?.uid === myUid;
-                            const h = !isAdminOnly && isMe && myL < 2;
+                            const active = !isAdminOnly && p?.uid === myUid && myL < 2;
                             const av = p ? AVATARS.find(a=>a.id===p.avatarId) : null;
                             return <g key={i}>
-                                <line x1={getX(i)} y1="40" x2={getX(i)} y2={dim.h-40} stroke={h?"#3b82f6":"#f1f5f9"} strokeWidth={h?"5":"3"} strokeLinecap="round" />
-                                <text x={getX(i)} y="20" textAnchor="middle" fontSize="9" className={`font-black ${h?'fill-blue-600':'fill-slate-300'}`}>{p?.nickname||i+1}</text>
-                                {av && <image href={av.face} x={getX(i)-10} y="24" width="20" height="20" className={h?"opacity-100":"opacity-70"} />}
+                                <line x1={getX(i)} y1="45" x2={getX(i)} y2={dim.h-45} stroke={active?"#3b82f6":"#f1f5f9"} strokeWidth={active?"5":"3"} strokeLinecap="round" />
+                                <text x={getX(i)} y="20" textAnchor="middle" fontSize="9" className={`font-black ${active?'fill-blue-600':'fill-slate-300'}`}>{p?.nickname||i+1}</text>
+                                {av && <image href={av.face} x={getX(i)-10} y="25" width="20" height="20" className={active?"opacity-100":"opacity-70"} />}
                             </g>;
                         })}
-                        {participants.flatMap(p=>p.lines||[]).map((l,i) => <line key={i} x1={getX(l.lineIndex)} y1={40+(l.y/100)*(dim.h-80)} x2={getX(l.lineIndex+1)} y2={40+(l.y/100)*(dim.h-80)} stroke="#cbd5e1" strokeWidth="2" strokeLinecap="round" />)}
+                        {participants.flatMap(p=>p.lines||[]).map((l,i) => <line key={i} x1={getX(l.lineIndex)} y1={45+(l.y/100)*(dim.h-95)} x2={getX(l.lineIndex+1)} y2={45+(l.y/100)*(dim.h-95)} stroke="#cbd5e1" strokeWidth="2.5" strokeLinecap="round" />)}
                         {animatingUsers.map(p => {
                             if(!p) return null;
-                            const {path} = tracePath(p.startIndex); const t = path.length, idx = Math.floor(animationProgress*(t-1)), rem = (animationProgress*(t-1))%1;
-                            let cx = getX(path[idx].x), cy = 40 + (path[idx].y/100)*(dim.h-80);
-                            if(idx < t-1){ const p2 = path[idx+1]; cx += (getX(p2.x)-cx)*rem; cy += ((40+(p2.y/100)*(dim.h-80))-cy)*rem; }
+                            const allLines = participants.flatMap(x=>x.lines||[]).sort((a,b)=>a.y-b.y);
+                            let cur = p.startIndex; const path = [{x:cur, y:0}];
+                            allLines.forEach(l => {
+                                if(l.lineIndex===cur){ path.push({x:cur,y:l.y}); cur++; path.push({x:cur,y:l.y}); }
+                                else if(l.lineIndex===cur-1){ path.push({x:cur,y:l.y}); cur--; path.push({x:cur,y:l.y}); }
+                            });
+                            path.push({x:cur,y:100});
+                            const t = path.length, idx = Math.floor(animationProgress*(t-1)), rem = (animationProgress*(t-1))%1;
+                            let cx = getX(path[idx].x), cy = 45 + (path[idx].y/100)*(dim.h-95);
+                            if(idx < t-1){ const p2 = path[idx+1]; cx += (getX(p2.x)-cx)*rem; cy += ((45+(p2.y/100)*(dim.h-95))-cy)*rem; }
                             const av = AVATARS.find(a=>a.id===p.avatarId) || AVATARS[0];
                             return <image key={p.uid} href={av.chibi} x={cx-18} y={cy-18} width="36" height="36" className="drop-shadow-md" />;
                         })}
-                        {room.items.map((it,i)=>(
+                        {(room.items || []).map((it,i)=>(
                             <g key={i}>
-                                <text x={getX(i)} y={dim.h-22} textAnchor="middle" fontSize="10" className="font-black fill-blue-600 uppercase truncate">{room.status === 'open' ? '?' : it}</text>
-                                {room.status !== 'open' && winnerMap[i] && (
-                                    <text x={getX(i)} y={dim.h-10} textAnchor="middle" fontSize="8" className="font-black fill-slate-400 truncate">{winnerMap[i]}</text>
+                                <text x={getX(i)} y={dim.h-25} textAnchor="middle" fontSize="10" className="font-black fill-blue-600 uppercase tracking-tighter">{room.status === 'open' ? '?' : it}</text>
+                                {revealedWinnerMap[i] && (
+                                    <text x={getX(i)} y={dim.h-10} textAnchor="middle" fontSize="8" className="font-black fill-slate-400 tracking-tighter animate-in fade-in zoom-in-50 duration-300">{revealedWinnerMap[i]}</text>
                                 )}
                             </g>
                         ))}
