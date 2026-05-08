@@ -1,3 +1,4 @@
+```html
 <!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -180,7 +181,7 @@
 
             return (
                 <div className="min-h-dvh flex flex-col max-w-md mx-auto relative px-3 py-3 bg-slate-50 overflow-hidden">
-                    <div className="fixed top-2 right-2 z-50 text-[10px] font-mono text-slate-300">ver.1.0.3</div>
+                    <div className="fixed top-2 right-2 z-50 text-[10px] font-mono text-slate-300">ver.1.0.4</div>
                     {error && <div className="bg-red-500 text-white p-3 rounded-xl mb-2 text-xs font-bold">{error}</div>}
 
                     {step === 'home' && (
@@ -331,6 +332,18 @@
             useEffect(() => { const up = () => { if(containerRef.current) setDim({w:containerRef.current.clientWidth, h:containerRef.current.clientHeight}); }; up(); window.addEventListener('resize', up); return ()=>window.removeEventListener('resize', up); }, []);
             const getX = (i) => { const p = 30; return p + i * ((dim.w - (p * 2)) / (room.lineCount - 1)); };
 
+            // 当選者のニックネームをスロットごとにマッピングする計算
+            const winnerMap = useMemo(() => {
+                if (room.status === 'open') return {};
+                const map = {};
+                participants.forEach(p => {
+                    const { path } = tracePath(p.startIndex);
+                    const finalIndex = path[path.length - 1].x;
+                    map[finalIndex] = p.nickname;
+                });
+                return map;
+            }, [room.status, participants, tracePath]);
+
             return (
                 <div ref={containerRef} className="w-full h-full p-2" onPointerDown={(e)=>{
                     if(isAdminOnly || !dim.w || myL >= 2) return;
@@ -365,7 +378,14 @@
                             const av = AVATARS.find(a=>a.id===p.avatarId) || AVATARS[0];
                             return <image key={p.uid} href={av.chibi} x={cx-18} y={cy-18} width="36" height="36" className="drop-shadow-md" />;
                         })}
-                        {room.items.map((it,i)=><text key={i} x={getX(i)} y={dim.h-15} textAnchor="middle" fontSize="10" className="font-black fill-blue-600 uppercase truncate">{room.status === 'open' ? '?' : it}</text>)}
+                        {room.items.map((it,i)=>(
+                            <g key={i}>
+                                <text x={getX(i)} y={dim.h-22} textAnchor="middle" fontSize="10" className="font-black fill-blue-600 uppercase truncate">{room.status === 'open' ? '?' : it}</text>
+                                {room.status !== 'open' && winnerMap[i] && (
+                                    <text x={getX(i)} y={dim.h-10} textAnchor="middle" fontSize="8" className="font-black fill-slate-400 truncate">{winnerMap[i]}</text>
+                                )}
+                            </g>
+                        ))}
                     </svg>
                 </div>
             );
@@ -376,3 +396,4 @@
 </body>
 </html>
 
+```
