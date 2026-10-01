@@ -35,11 +35,10 @@ const firebaseConfig = {
     appId: "1:563406816716:web:f4e638d73684952e634969"
 };
 const APP_ID = "papikko-song-amida";
-const APP_VER = "3.3.2";
+const APP_VER = "3.3.4";
 if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
 const db = firebase.firestore();
-const auth = firebase.auth();
-auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL).catch(() => {});
+const auth = firebase.auth ? firebase.auth() : null;
 
 const AVATARS = [
     { id: 'green', face: 'https://i.imgur.com/CuAVKZ6.png', chibi: 'https://i.imgur.com/F84QLmL.png' },
@@ -77,13 +76,12 @@ function fallbackUid() {
 }
 
 function App() {
-    const [uid, setUid] = useState(null);
-    const [authReady, setAuthReady] = useState(false);
+    const [uid, setUid] = useState(fallbackUid);
     const [room, setRoom] = useState(null);
     const [participants, setParticipants] = useState([]);
     const [partsReady, setPartsReady] = useState(false);
     const [step, setStep] = useState('home');
-    const [loading, setLoading] = useState(true);
+    const [loading, setLoading] = useState(false);
     const [roomIdInput, setRoomIdInput] = useState('');
     const [nickname, setNickname] = useState('');
     const [selectedStartIndex, setSelectedStartIndex] = useState(null);
@@ -98,23 +96,25 @@ function App() {
     const [entryDone, setEntryDone] = useState(false);
     const [claimedHost, setClaimedHost] = useState(false);
     const addingRef = useRef(false);
+    const booted = useRef(false);
 
     useEffect(() => {
+        if (!auth) return;
         const unsub = auth.onAuthStateChanged((user) => {
-            const next = user?.uid || fallbackUid();
-            if (user?.uid) localStorage.setItem(LS_UID, user.uid);
-            setUid(next);
-            setAuthReady(true);
+            if (user?.uid) {
+                localStorage.setItem(LS_UID, user.uid);
+                setUid(user.uid);
+            }
         });
-        return () => unsub();
+        return () => unsub && unsub();
     }, []);
 
     useEffect(() => {
-        if (!authReady || !uid) return;
+        if (booted.current) return;
+        booted.current = true;
         const rid = new URLSearchParams(window.location.search).get('room');
         if (rid) joinRoom(rid.toUpperCase());
-        else setLoading(false);
-    }, [authReady, uid]);
+    }, []);
 
     useEffect(() => {
         if (!room?.id || !uid) return;
@@ -164,11 +164,17 @@ function App() {
     };
 
     const joinRoom = async (id) => {
-        if (!id || !uid) { setError('IDを入力してください'); return; }
+        if (!id) { setError('IDを入力してください'); return; }
         setLoading(true);
         setError(null);
+        const timer = setTimeout(() => {
+            setError('接続がタイムアウトしました');
+            setStep('home');
+            setLoading(false);
+        }, 8000);
         try {
             const s = await roomDoc(id).get();
+            clearTimeout(timer);
             if (!s.exists) {
                 setError('部屋が見つかりません');
                 setStep('home');
@@ -176,16 +182,18 @@ function App() {
                 return;
             }
             const data = { id, ...s.data() };
-            if (data.creatorUid === uid) rememberHost(id);
-            setClaimedHost(readHosts().includes(id) || data.creatorUid === uid);
+            const meId = auth?.currentUser?.uid || uid;
+            if (data.creatorUid === meId) rememberHost(id);
+            setClaimedHost(readHosts().includes(id) || data.creatorUid === meId);
             setRoom(data);
-            setEntryDone(localStorage.getItem(entryKey(id, uid)) === '1');
-            setHostOnly(localStorage.getItem(hostOnlyKey(id, uid)) === '1');
-            const ps = await partDoc(id, uid).get();
+            setEntryDone(localStorage.getItem(entryKey(id, meId)) === '1');
+            setHostOnly(localStorage.getItem(hostOnlyKey(id, meId)) === '1');
+            const ps = await partDoc(id, meId).get();
             if (data.status === 'closed') setStep('result');
             else if (ps.exists) setStep('lobby');
             else setStep('register');
         } catch (e) {
+            clearTimeout(timer);
             setError('接続に失敗しました（' + (e.code || e.message) + '）');
             setStep('home');
         }
@@ -198,9 +206,10 @@ function App() {
         setClaimedHost(true);
     };
 
-    const register = async () => {
+    const register = async (asHost) => {
         if (!nickname.trim() || selectedStartIndex === null || !room) return;
         setError(null);
+        if (asHost) claimHost();
         try {
             await db.runTransaction(async (tx) => {
                 const rRef = roomDoc(room.id);
@@ -210,8 +219,7 @@ function App() {
                 const taken = snap.data().takenStarts || {};
                 const key = String(selectedStartIndex);
                 if (taken[key] && taken[key] !== uid) throw new Error('taken');
-                const occupied = participants.some(p => Number(p.startIndex) === selectedStartIndex && p.uid !== uid);
-                if (occupied) throw new Error('taken');
+                if (participants.some(p => Number(p.startIndex) === selectedStartIndex && p.uid !== uid)) throw new Error('taken');
                 tx.update(rRef, { [`takenStarts.${key}`]: uid });
                 tx.set(partDoc(room.id, uid), {
                     uid, nickname: nickname.trim(), startIndex: selectedStartIndex,
@@ -237,15 +245,6 @@ function App() {
         setStep('lobby');
     };
 
-    const joinAsHost = () => {
-        if (!room) return;
-        claimHost();
-        localStorage.removeItem(hostOnlyKey(room.id, uid));
-        setHostOnly(false);
-        setSelectedStartIndex(null);
-        setStep('register');
-    };
-
     const completeEntry = () => {
         if (!room) return;
         localStorage.setItem(entryKey(room.id, uid), '1');
@@ -253,7 +252,7 @@ function App() {
     };
 
     const addLine = async (idx, yp) => {
-        if (!room || addingRef.current || hostOnly || entryDone) return;
+        if (!room || addingRef.current || hostOnly || entryDone || room.status === 'closed') return;
         const me = participants.find(p => p.uid === uid);
         const current = Math.max((me?.lines || []).length, localLines);
         if (current >= 2) return;
@@ -272,7 +271,7 @@ function App() {
     };
 
     const closeRoom = async () => {
-        if (!room || !isHost) return;
+        if (!room || !isHost || participants.length < room.lineCount) return;
         await roomDoc(room.id).update({ status: 'closed' });
     };
 
@@ -295,12 +294,13 @@ function App() {
         requestAnimationFrame(animate);
     };
 
-    if (!authReady || loading) return <div className="flex items-center justify-center h-dvh"><div className="loader"></div></div>;
+    if (loading) return <div className="flex items-center justify-center h-dvh"><div className="loader"></div></div>;
 
     const myP = participants.find(p => p.uid === uid);
     const myL = Math.min(2, Math.max(myP?.lines?.length || 0, localLines));
     const closed = room?.status === 'closed';
     const isHost = !!(room && (room.creatorUid === uid || claimedHost || readHosts().includes(room.id)));
+    const full = !!(room && participants.length >= room.lineCount);
     const revealGoals = closed && (isHost || hasViewedMine);
     const occupant = (i) => participants.find(p => Number(p.startIndex) === i);
     const slotTaken = (i) => {
@@ -332,13 +332,11 @@ function App() {
             {step === 'create' && <CreateRoomView onCreate={createRoom} onCancel={() => setStep('home')} />}
 
             {step === 'register' && room && (
-                <div className="flex-1 flex flex-col space-y-4">
+                <div className="flex-1 flex flex-col space-y-3">
                     <h2 className="text-xl font-black">参加登録</h2>
                     <div className="bg-white p-5 rounded-[2.5rem] space-y-5 border overflow-y-auto no-scrollbar">
                         <p className="text-[11px] font-bold text-slate-400">{room.title} / 全{room.lineCount}枠中 残り{openSlots.length}枠</p>
-                        {participants.length > 0 && (
-                            <p className="text-[10px] font-bold text-slate-500">参加済: {participants.map(p => `${p.nickname}(${Number(p.startIndex) + 1})`).join('、')}</p>
-                        )}
+                        {participants.length > 0 && <p className="text-[10px] font-bold text-slate-500">参加済: {participants.map(p => `${p.nickname}(${Number(p.startIndex) + 1})`).join('、')}</p>}
                         <input value={nickname} onChange={e => setNickname(e.target.value)} placeholder="ニックネーム" className="w-full p-3 border-2 border-slate-50 rounded-xl font-bold" />
                         <div className="grid grid-cols-3 gap-2">
                             {AVATARS.map(a => (
@@ -353,10 +351,9 @@ function App() {
                                 <button key={i} disabled={!partsReady} onClick={() => setSelectedStartIndex(i)} className={`p-3 border-2 rounded-xl font-black ${selectedStartIndex === i ? 'bg-blue-600 text-white border-blue-600' : 'text-slate-400 border-slate-100'}`}>{i + 1}</button>
                             ))}
                         </div>
-                        {partsReady && openSlots.length === 0 && <p className="text-center text-[10px] font-bold text-slate-400">空き枠がありません</p>}
                     </div>
-                    <button onClick={register} disabled={!partsReady || !nickname.trim() || selectedStartIndex === null} className="w-full bg-blue-600 text-white font-black py-4 rounded-xl disabled:opacity-30">参加する</button>
-                    <button onClick={() => { claimHost(); register(); }} disabled={!partsReady || !nickname.trim() || selectedStartIndex === null} className="w-full bg-slate-900 text-white font-black py-4 rounded-xl disabled:opacity-30">管理人として参加する</button>
+                    <button onClick={() => register(false)} disabled={!partsReady || !nickname.trim() || selectedStartIndex === null} className="w-full bg-blue-600 text-white font-black py-4 rounded-xl disabled:opacity-30">参加する</button>
+                    <button onClick={() => register(true)} disabled={!partsReady || !nickname.trim() || selectedStartIndex === null} className="w-full bg-slate-900 text-white font-black py-4 rounded-xl disabled:opacity-30">管理人として参加する</button>
                     <button onClick={becomeHostOnly} className="w-full text-slate-400 text-[11px] font-bold underline">参加者にならず進行だけする</button>
                 </div>
             )}
@@ -374,7 +371,7 @@ function App() {
                         {step === 'lobby' && (
                             <div className="p-2 border-b flex justify-between">
                                 <span className="text-[9px] font-black text-blue-600">
-                                    {hostOnly ? '進行モード' : entryDone ? 'エントリー完了' : myL < 2 ? `あと ${2 - myL} 本まで引けます` : '2本引きました。エントリー完了を押してください'}
+                                    {hostOnly ? '進行モード' : entryDone ? 'エントリー完了。締め切り待ち' : myL < 2 ? `あと ${2 - myL} 本` : '2本引いたらエントリー完了'}
                                 </span>
                                 <span className="text-[9px] font-black text-slate-400">{participants.length} / {room.lineCount} 人</span>
                             </div>
@@ -399,31 +396,29 @@ function App() {
                                     {!hostOnly && !entryDone && myL >= 2 && (
                                         <button onClick={completeEntry} className="w-full bg-blue-600 text-white py-4 rounded-xl font-black">エントリー完了</button>
                                     )}
-                                    {!hostOnly && entryDone && (
-                                        <p className="text-center text-[10px] font-bold text-slate-400 py-1">エントリー完了。管理人の開始まで結果は見えません</p>
+                                    {!hostOnly && !isHost && (
+                                        <p className="text-center text-[10px] font-bold text-slate-400 py-2">{full ? '全員揃いました。管理人の締め切りを待っています' : '全員が揃うまで結果は出ません'}</p>
                                     )}
-                                    {!isHost && (
-                                        <button onClick={claimHost} className="w-full bg-slate-900 text-white py-3 rounded-xl font-black">この部屋の管理人として入る</button>
+                                    {isHost && !full && (
+                                        <p className="text-center text-[10px] font-bold text-slate-400 py-2">全員揃うまで締め切りできません（{participants.length}/{room.lineCount}）</p>
                                     )}
-                                    {isHost && !myP && (
-                                        <button onClick={joinAsHost} className="w-full bg-white border-2 border-slate-200 text-slate-700 py-3 rounded-xl font-black">管理人として参加する</button>
+                                    {isHost && full && (
+                                        <button onClick={closeRoom} className="w-full bg-slate-900 text-white py-4 rounded-xl font-black">エントリーを締め切ってアミダをみる</button>
                                     )}
-                                    {isHost ? (
-                                        <button onClick={closeRoom} className="w-full bg-slate-900 text-white py-4 rounded-xl font-black">あみだを開始する</button>
-                                    ) : (
-                                        <p className="text-center text-[10px] font-bold text-slate-400 py-2">主催者の開始を待っています</p>
+                                    {!isHost && hostOnly && (
+                                        <button onClick={claimHost} className="w-full text-slate-400 text-[11px] font-bold underline">この部屋の管理人として入る</button>
                                     )}
                                 </>
                             ) : (
                                 <div className="space-y-2">
-                                    {!isHost && myP && !hasViewedMine && (
-                                        <button onClick={() => { setHasViewedMine(true); play([myP], 2800); }} className="w-full bg-blue-600 text-white py-4 rounded-xl font-black">自分の結果を見る</button>
+                                    {myP && !hasViewedMine && (
+                                        <button onClick={() => { setHasViewedMine(true); play([myP], 2800); }} className="w-full bg-blue-600 text-white py-4 rounded-xl font-black">結果を見る</button>
                                     )}
                                     {isHost && (
                                         <button onClick={() => play(participants, 3500)} className="w-full bg-slate-900 text-white py-4 rounded-xl font-black">全員の結果を見る</button>
                                     )}
-                                    {!isHost && hasViewedMine && (
-                                        <p className="text-center text-[10px] font-bold text-slate-400 py-2">あなたの結果を確認しました</p>
+                                    {myP && hasViewedMine && !isHost && (
+                                        <p className="text-center text-[10px] font-bold text-slate-400 py-2">結果を確認しました</p>
                                     )}
                                 </div>
                             )}
