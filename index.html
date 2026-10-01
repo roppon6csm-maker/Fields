@@ -18,6 +18,7 @@
 <body class="bg-slate-50">
 <div id="root"></div>
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -36,6 +37,8 @@ const firebaseConfig = {
 const APP_ID = "papikko-song-amida";
 if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
 const db = firebase.firestore();
+const auth = firebase.auth();
+auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL).catch(() => {});
 
 const AVATARS = [
     { id: 'green', face: 'https://i.imgur.com/CuAVKZ6.png', chibi: 'https://i.imgur.com/F84QLmL.png' },
@@ -51,14 +54,6 @@ const LS_HOSTS = 'amida_host_rooms';
 const LS_HOST_ONLY = 'amida_host_only_';
 const LS_ENTRY = 'amida_entry_done_';
 
-function getUid() {
-    let id = localStorage.getItem(LS_UID);
-    if (!id) {
-        id = 'd_' + Math.random().toString(36).slice(2, 12);
-        localStorage.setItem(LS_UID, id);
-    }
-    return id;
-}
 function readHosts() {
     try { return JSON.parse(localStorage.getItem(LS_HOSTS) || '[]'); } catch (e) { return []; }
 }
@@ -71,11 +66,21 @@ function hostOnlyKey(rid, uid) { return LS_HOST_ONLY + rid + '_' + uid; }
 function roomDoc(id) { return db.doc(`artifacts/${APP_ID}/public/data/rooms/${id}`); }
 function partDoc(rid, uid) { return db.doc(`artifacts/${APP_ID}/public/data/rooms/${rid}/participants/${uid}`); }
 function partsCol(rid) { return db.collection(`artifacts/${APP_ID}/public/data/rooms/${rid}/participants`); }
+function fallbackUid() {
+    let id = localStorage.getItem(LS_UID);
+    if (!id) {
+        id = 'd_' + Math.random().toString(36).slice(2, 12);
+        localStorage.setItem(LS_UID, id);
+    }
+    return id;
+}
 
 function App() {
-    const uid = useMemo(() => getUid(), []);
+    const [uid, setUid] = useState(null);
+    const [authReady, setAuthReady] = useState(false);
     const [room, setRoom] = useState(null);
     const [participants, setParticipants] = useState([]);
+    const [partsReady, setPartsReady] = useState(false);
     const [step, setStep] = useState('home');
     const [loading, setLoading] = useState(true);
     const [roomIdInput, setRoomIdInput] = useState('');
@@ -90,28 +95,44 @@ function App() {
     const [localLines, setLocalLines] = useState(0);
     const [hostOnly, setHostOnly] = useState(false);
     const [entryDone, setEntryDone] = useState(false);
+    const [claimedHost, setClaimedHost] = useState(false);
     const addingRef = useRef(false);
 
     useEffect(() => {
-        const rid = new URLSearchParams(window.location.search).get('room');
-        if (rid) joinRoom(rid.toUpperCase());
-        else setLoading(false);
+        const unsub = auth.onAuthStateChanged((user) => {
+            const next = user?.uid || fallbackUid();
+            if (user?.uid) localStorage.setItem(LS_UID, user.uid);
+            setUid(next);
+            setAuthReady(true);
+        });
+        return () => unsub();
     }, []);
 
     useEffect(() => {
-        if (!room?.id) return;
+        if (!authReady || !uid) return;
+        const rid = new URLSearchParams(window.location.search).get('room');
+        if (rid) joinRoom(rid.toUpperCase());
+        else setLoading(false);
+    }, [authReady, uid]);
+
+    useEffect(() => {
+        if (!room?.id || !uid) return;
         setEntryDone(localStorage.getItem(entryKey(room.id, uid)) === '1');
         setHostOnly(localStorage.getItem(hostOnlyKey(room.id, uid)) === '1');
+        setClaimedHost(readHosts().includes(room.id));
+        setPartsReady(false);
         const unsubR = roomDoc(room.id).onSnapshot((s) => {
             if (!s.exists) return;
             const data = s.data();
             setRoom(prev => ({ ...prev, ...data, id: room.id }));
+            if (data.creatorUid && data.creatorUid === uid) rememberHost(room.id);
             if (data.status === 'closed') setStep('result');
         }, (e) => setError('部屋を読めません: ' + (e.code || e.message)));
         const unsubP = partsCol(room.id).onSnapshot((s) => {
             const list = [];
-            s.forEach(d => list.push({ id: d.id, ...d.data() }));
+            s.forEach(d => list.push({ id: d.id, ...d.data(), startIndex: Number(d.data().startIndex) }));
             setParticipants(list);
+            setPartsReady(true);
             const me = list.find(p => p.uid === uid);
             if (me) setLocalLines(prev => Math.max(prev, (me.lines || []).length));
             if (me && step === 'register') setStep('lobby');
@@ -133,6 +154,7 @@ function App() {
             localStorage.removeItem(entryKey(rid, uid));
             setHostOnly(false);
             setEntryDone(false);
+            setClaimedHost(true);
             setRoom(data);
             setStep('register');
         } catch (e) {
@@ -141,7 +163,7 @@ function App() {
     };
 
     const joinRoom = async (id) => {
-        if (!id) { setError('IDを入力してください'); return; }
+        if (!id || !uid) { setError('IDを入力してください'); return; }
         setLoading(true);
         setError(null);
         try {
@@ -153,6 +175,8 @@ function App() {
                 return;
             }
             const data = { id, ...s.data() };
+            if (data.creatorUid === uid) rememberHost(id);
+            setClaimedHost(readHosts().includes(id) || data.creatorUid === uid);
             setRoom(data);
             setEntryDone(localStorage.getItem(entryKey(id, uid)) === '1');
             setHostOnly(localStorage.getItem(hostOnlyKey(id, uid)) === '1');
@@ -167,6 +191,12 @@ function App() {
         setLoading(false);
     };
 
+    const claimHost = () => {
+        if (!room) return;
+        rememberHost(room.id);
+        setClaimedHost(true);
+    };
+
     const register = async () => {
         if (!nickname.trim() || selectedStartIndex === null || !room) return;
         setError(null);
@@ -179,6 +209,8 @@ function App() {
                 const taken = snap.data().takenStarts || {};
                 const key = String(selectedStartIndex);
                 if (taken[key] && taken[key] !== uid) throw new Error('taken');
+                const occupied = participants.some(p => Number(p.startIndex) === selectedStartIndex && p.uid !== uid);
+                if (occupied) throw new Error('taken');
                 tx.update(rRef, { [`takenStarts.${key}`]: uid });
                 tx.set(partDoc(room.id, uid), {
                     uid, nickname: nickname.trim(), startIndex: selectedStartIndex,
@@ -260,22 +292,23 @@ function App() {
         requestAnimationFrame(animate);
     };
 
-    if (loading) return <div className="flex items-center justify-center h-dvh"><div className="loader"></div></div>;
+    if (!authReady || loading) return <div className="flex items-center justify-center h-dvh"><div className="loader"></div></div>;
 
     const myP = participants.find(p => p.uid === uid);
     const myL = Math.min(2, Math.max(myP?.lines?.length || 0, localLines));
     const closed = room?.status === 'closed';
-    const isHost = !!(room && (room.creatorUid === uid || readHosts().includes(room.id)));
+    const isHost = !!(room && (room.creatorUid === uid || claimedHost || readHosts().includes(room.id)));
     const revealGoals = closed && (isHost || hasViewedMine);
+    const occupant = (i) => participants.find(p => Number(p.startIndex) === i);
     const slotTaken = (i) => {
-        const byPerson = participants.find(p => p.startIndex === i && p.uid !== uid);
+        const person = occupant(i);
         const owner = (room?.takenStarts || {})[String(i)];
-        return !!(byPerson || (owner && owner !== uid));
+        return !!((person && person.uid !== uid) || (owner && owner !== uid));
     };
 
     return (
         <div className="min-h-dvh flex flex-col max-w-md mx-auto px-3 py-3 bg-slate-50 overflow-hidden">
-            <div className="fixed top-2 right-2 text-[10px] font-mono text-slate-300">ver.3.3.0</div>
+            <div className="fixed top-2 right-2 text-[10px] font-mono text-slate-300">ver.3.3.1</div>
             {error && <div className="bg-red-500 text-white p-3 rounded-xl mb-2 text-xs font-bold">{error}</div>}
 
             {step === 'home' && (
@@ -298,6 +331,7 @@ function App() {
                 <div className="flex-1 flex flex-col space-y-4">
                     <h2 className="text-xl font-black">参加登録</h2>
                     <div className="bg-white p-5 rounded-[2.5rem] space-y-5 border overflow-y-auto no-scrollbar">
+                        <p className="text-[11px] font-bold text-slate-400">{room.title} / {room.lineCount}枠（参加済 {participants.length}人）</p>
                         <input value={nickname} onChange={e => setNickname(e.target.value)} placeholder="ニックネーム" className="w-full p-3 border-2 border-slate-50 rounded-xl font-bold" />
                         <div className="grid grid-cols-3 gap-2">
                             {AVATARS.map(a => (
@@ -306,18 +340,25 @@ function App() {
                                 </button>
                             ))}
                         </div>
+                        {!partsReady && <p className="text-center text-[10px] font-bold text-slate-400">参加者を確認しています</p>}
                         <div className="grid grid-cols-5 gap-1.5">
                             {Array.from({ length: room.lineCount }).map((_, i) => {
+                                const person = occupant(i);
                                 const taken = slotTaken(i);
                                 return (
-                                    <button key={i} disabled={taken} onClick={() => setSelectedStartIndex(i)} className={`p-3 border-2 rounded-xl font-black ${selectedStartIndex === i ? 'bg-blue-600 text-white border-blue-600' : taken ? 'opacity-20' : 'text-slate-300 border-slate-50'}`}>{i + 1}</button>
+                                    <button key={i} disabled={!partsReady || taken} onClick={() => setSelectedStartIndex(i)} className={`p-2 border-2 rounded-xl font-black text-xs ${selectedStartIndex === i ? 'bg-blue-600 text-white border-blue-600' : taken ? 'opacity-40 bg-slate-100' : 'text-slate-300 border-slate-50'}`}>
+                                        <div>{i + 1}</div>
+                                        {person && <div className="text-[8px] truncate">{person.nickname}</div>}
+                                    </button>
                                 );
                             })}
                         </div>
                     </div>
-                    <button onClick={register} disabled={!nickname.trim() || selectedStartIndex === null} className="w-full bg-blue-600 text-white font-black py-4 rounded-xl disabled:opacity-30">{isHost ? '管理人として参加する' : '参加！'}</button>
-                    {isHost && (
+                    <button onClick={register} disabled={!partsReady || !nickname.trim() || selectedStartIndex === null} className="w-full bg-blue-600 text-white font-black py-4 rounded-xl disabled:opacity-30">{isHost ? '管理人として参加する' : '参加！'}</button>
+                    {isHost ? (
                         <button onClick={becomeHostOnly} className="w-full text-slate-400 text-[11px] font-bold underline">参加者にならず進行だけする</button>
+                    ) : (
+                        <button onClick={claimHost} className="w-full bg-slate-900 text-white text-sm font-black py-3 rounded-xl">この部屋の管理人として入る</button>
                     )}
                 </div>
             )}
@@ -362,6 +403,9 @@ function App() {
                                     )}
                                     {!hostOnly && entryDone && (
                                         <p className="text-center text-[10px] font-bold text-slate-400 py-1">エントリー完了。管理人の開始まで結果は見えません</p>
+                                    )}
+                                    {!isHost && (
+                                        <button onClick={claimHost} className="w-full bg-slate-900 text-white py-3 rounded-xl font-black">この部屋の管理人として入る</button>
                                     )}
                                     {isHost && !myP && (
                                         <button onClick={joinAsHost} className="w-full bg-white border-2 border-slate-200 text-slate-700 py-3 rounded-xl font-black">管理人として参加する</button>
@@ -438,7 +482,7 @@ function AmidaBoard({ room, participants, onAddLine, myUid, animatingUsers, anim
         const allLines = participants.flatMap(p => p.lines || []).sort((a, b) => a.y - b.y);
         animatingUsers.forEach(p => {
             if (!p) return;
-            let cur = p.startIndex;
+            let cur = Number(p.startIndex);
             allLines.forEach(l => { if (l.lineIndex === cur) cur++; else if (l.lineIndex === cur - 1) cur--; });
             map[cur] = p.nickname;
         });
@@ -457,7 +501,7 @@ function AmidaBoard({ room, participants, onAddLine, myUid, animatingUsers, anim
         <div ref={containerRef} className="w-full h-full p-2" onPointerDown={handlePointerDown} style={{ touchAction: 'none' }}>
             <svg className="w-full h-full" style={{ overflow: 'visible' }}>
                 {Array.from({ length: room.lineCount }).map((_, i) => {
-                    const person = participants.find(x => x.startIndex === i);
+                    const person = participants.find(x => Number(x.startIndex) === i);
                     const active = person?.uid === myUid && canDraw && myL < 2;
                     const av = person ? AVATARS.find(a => a.id === person.avatarId) : null;
                     return (
@@ -474,7 +518,7 @@ function AmidaBoard({ room, participants, onAddLine, myUid, animatingUsers, anim
                 {animatingUsers.map(p => {
                     if (!p) return null;
                     const allLines = participants.flatMap(x => x.lines || []).sort((a, b) => a.y - b.y);
-                    let cur = p.startIndex;
+                    let cur = Number(p.startIndex);
                     const path = [{ x: cur, y: 0 }];
                     allLines.forEach(l => {
                         if (l.lineIndex === cur) { path.push({ x: cur, y: l.y }); cur++; path.push({ x: cur, y: l.y }); }
