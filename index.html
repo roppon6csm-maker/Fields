@@ -12,19 +12,10 @@
             -webkit-tap-highlight-color: transparent;
             overflow-x: hidden;
         }
-        .no-scrollbar::-webkit-scrollbar {
-            display: none;
-        }
-        .no-scrollbar {
-            -ms-overflow-style: none;
-            scrollbar-width: none;
-        }
-        input:focus {
-            outline: none;
-        }
-        .min-h-dvh {
-            min-height: 100dvh;
-        }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        input:focus { outline: none; }
+        .min-h-dvh { min-height: 100dvh; }
         .loader {
             border: 4px solid #f3f3f3;
             border-top: 4px solid #3b82f6;
@@ -34,35 +25,22 @@
             animation: spin 1s linear infinite;
         }
         @keyframes spin {
-            0% {
-                transform: rotate(0deg);
-            }
-            100% {
-                transform: rotate(360deg);
-            }
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
         }
     </style>
 </head>
 <body class="bg-slate-50">
 <div id="root"></div>
-<!-- Firebase SDK -->
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
-<!-- React -->
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <script type="text/babel">
-const {
-    useState,
-    useEffect,
-    useRef,
-    useMemo
-} = React;
-/* =========================================================
-   Firebase Configuration
-========================================================= */
+const { useState, useEffect, useRef, useMemo } = React;
+
 const firebaseConfig = {
     apiKey: "AIzaSyAxf4kGrWJFilI5nnw3YYWct-Pc2DQn7Mo",
     authDomain: "amida-4402e.firebaseapp.com",
@@ -73,54 +51,30 @@ const firebaseConfig = {
     measurementId: "G-JELMYD5S7S"
 };
 const DATABASE_APP_ID = "papikko-song-amida";
-/* =========================================================
-   Firebase Initialize
-========================================================= */
-if (firebaseConfig.apiKey) {
+
+if (!firebase.apps.length) {
     firebase.initializeApp(firebaseConfig);
 }
 const auth = firebase.auth();
 const db = firebase.firestore();
-/* =========================================================
-   Constants
-========================================================= */
+
 const AVATARS = [
-    {
-        id: 'green',
-        face: 'https://i.imgur.com/CuAVKZ6.png',
-        chibi: 'https://i.imgur.com/F84QLmL.png'
-    },
-    {
-        id: 'orange',
-        face: 'https://i.imgur.com/NXFy6xe.png',
-        chibi: 'https://i.imgur.com/R6OY57k.png'
-    },
-    {
-        id: 'pink',
-        face: 'https://i.imgur.com/FPfPp8I.png',
-        chibi: 'https://i.imgur.com/wUXQD9g.png'
-    },
-    {
-        id: 'red',
-        face: 'https://i.imgur.com/YS21OOw.png',
-        chibi: 'https://i.imgur.com/bSPZH8v.png'
-    },
-    {
-        id: 'blue',
-        face: 'https://i.imgur.com/VKsNUmM.png',
-        chibi: 'https://i.imgur.com/sDvV2zp.png'
-    },
-    {
-        id: 'purple',
-        face: 'https://i.imgur.com/4QVoid0.png',
-        chibi: 'https://i.imgur.com/QoEnzAy.png'
-    }
+    { id: 'green', face: 'https://i.imgur.com/CuAVKZ6.png', chibi: 'https://i.imgur.com/F84QLmL.png' },
+    { id: 'orange', face: 'https://i.imgur.com/NXFy6xe.png', chibi: 'https://i.imgur.com/R6OY57k.png' },
+    { id: 'pink', face: 'https://i.imgur.com/FPfPp8I.png', chibi: 'https://i.imgur.com/wUXQD9g.png' },
+    { id: 'red', face: 'https://i.imgur.com/YS21OOw.png', chibi: 'https://i.imgur.com/bSPZH8v.png' },
+    { id: 'blue', face: 'https://i.imgur.com/VKsNUmM.png', chibi: 'https://i.imgur.com/sDvV2zp.png' },
+    { id: 'purple', face: 'https://i.imgur.com/4QVoid0.png', chibi: 'https://i.imgur.com/QoEnzAy.png' }
 ];
-const TITLE_IMAGE_URL =
-    'https://lh3.googleusercontent.com/d/1INllaq4V8y-HbTlMyJm-DfFyz5e3aHfn';
-/* =========================================================
-   App
-========================================================= */
+const TITLE_IMAGE_URL = 'https://lh3.googleusercontent.com/d/1INllaq4V8y-HbTlMyJm-DfFyz5e3aHfn';
+
+function roomRef(id) {
+    return db.doc(`artifacts/${DATABASE_APP_ID}/public/data/rooms/${id}`);
+}
+function participantsRef(id) {
+    return db.collection(`artifacts/${DATABASE_APP_ID}/public/data/rooms/${id}/participants`);
+}
+
 function App() {
     const [user, setUser] = useState(null);
     const [room, setRoom] = useState(null);
@@ -130,357 +84,235 @@ function App() {
     const [roomIdInput, setRoomIdInput] = useState('');
     const [nickname, setNickname] = useState('');
     const [selectedStartIndex, setSelectedStartIndex] = useState(null);
-    const [selectedAvatarId, setSelectedAvatarId] =
-        useState(AVATARS[0].id);
+    const [selectedAvatarId, setSelectedAvatarId] = useState(AVATARS[0].id);
     const [error, setError] = useState(null);
     const [animatingUsers, setAnimatingUsers] = useState([]);
     const [animationProgress, setAnimationProgress] = useState(0);
     const [hasViewedMine, setHasViewedMine] = useState(false);
     const [copySuccess, setCopySuccess] = useState(false);
     const [isAdminOnly, setIsAdminOnly] = useState(false);
-    /*
-     * Firestoreへの書き込み待ち本数。
-     *
-     * これが今回の重要な修正。
-     *
-     * FirestoreのonSnapshotが返ってくる前に
-     * もう一度タップされても、
-     *
-     * currentLines + pendingLines
-     *
-     * で2本を超えないようにする。
-     */
-    const [pendingLines, setPendingLines] = useState(0);
-    /* =====================================================
-       Authentication
-    ===================================================== */
+    const [localLineCount, setLocalLineCount] = useState(0);
+    const addingRef = useRef(false);
+
     useEffect(() => {
+        let alive = true;
         const unsubscribe = auth.onAuthStateChanged(async (u) => {
-            if (!u) {
-                await auth.signInAnonymously();
-                return;
-            }
-            setUser(u);
-            const params =
-                new URLSearchParams(window.location.search);
-            const rid = params.get('room');
-            if (rid) {
-                joinRoom(rid.toUpperCase());
-            } else {
+            try {
+                if (!u) {
+                    await auth.signInAnonymously();
+                    return;
+                }
+                if (!alive) return;
+                setUser(u);
+                const rid = new URLSearchParams(window.location.search).get('room');
+                if (rid) {
+                    await joinRoom(rid.toUpperCase(), u.uid);
+                } else {
+                    setLoading(false);
+                }
+            } catch (e) {
+                console.error(e);
+                if (!alive) return;
+                setError('ログインに失敗しました。Firebaseの匿名認証と、承認済みドメイン（*.github.io）を確認してください。');
                 setLoading(false);
             }
         });
-        return () => unsubscribe();
+        return () => {
+            alive = false;
+            unsubscribe();
+        };
     }, []);
-    /* =====================================================
-       Firestore realtime listeners
-    ===================================================== */
+
     useEffect(() => {
         if (!user || !room?.id) return;
-        const rRef =
-            db.doc(
-                `artifacts/${DATABASE_APP_ID}/public/data/rooms/${room.id}`
-            );
-        const pRef =
-            db.collection(
-                `artifacts/${DATABASE_APP_ID}/public/data/rooms/${room.id}/participants`
-            );
-        const unsubR = rRef.onSnapshot((s) => {
+        const unsubR = roomRef(room.id).onSnapshot((s) => {
             if (!s.exists) return;
             const data = s.data();
-            setRoom(prev => ({
-                ...prev,
-                ...data
-            }));
-            if (data.status === 'closed') {
-                setStep('result');
-            }
+            setRoom(prev => ({ ...prev, ...data }));
+            if (data.status === 'closed') setStep('result');
+        }, (e) => {
+            console.error(e);
+            setError('部屋の購読に失敗しました。Firestoreルールを確認してください。');
         });
-        const unsubP = pRef.onSnapshot((s) => {
+        const unsubP = participantsRef(room.id).onSnapshot((s) => {
             const list = [];
-            s.forEach(d => {
-                list.push(d.data());
-            });
+            s.forEach(d => list.push(d.data()));
             setParticipants(list);
-            const me =
-                list.find(p => p.uid === user.uid);
-            /*
-             * Firestoreに参加者情報が入ったら
-             * 登録画面からロビーへ移動。
-             */
-            if (
-                (me || isAdminOnly) &&
-                step === 'register'
-            ) {
-                setStep('lobby');
+            const me = list.find(p => p.uid === user.uid);
+            if (me) {
+                setLocalLineCount(prev => Math.max(prev, me.lines?.length || 0));
             }
+            if ((me || isAdminOnly) && step === 'register') setStep('lobby');
+        }, (e) => {
+            console.error(e);
+            setError('参加者の購読に失敗しました。Firestoreルールを確認してください。');
         });
         return () => {
             unsubR();
             unsubP();
         };
-    }, [
-        user,
-        room?.id,
-        step,
-        isAdminOnly
-    ]);
-    /* =====================================================
-       Create Room
-    ===================================================== */
+    }, [user, room?.id, step, isAdminOnly]);
+
     const createRoom = async (config) => {
-        const rid =
-            Math.random()
-                .toString(36)
-                .substring(2, 8)
-                .toUpperCase();
+        if (!user) return;
+        const rid = Math.random().toString(36).substring(2, 8).toUpperCase();
         const data = {
             id: rid,
             title: config.title,
             lineCount: config.lineCount,
             items: config.items,
             status: 'open',
-            creatorUid: user.uid
+            creatorUid: user.uid,
+            takenStarts: {}
         };
-        await db
-            .doc(
-                `artifacts/${DATABASE_APP_ID}/public/data/rooms/${rid}`
-            )
-            .set(data);
+        await roomRef(rid).set(data);
         setRoom(data);
         setStep('register');
     };
-    /* =====================================================
-       Join Room
-    ===================================================== */
-    const joinRoom = async (id) => {
+
+    const joinRoom = async (id, uid) => {
+        const who = uid || user?.uid;
         if (!id) {
-            setError("IDを入力してください");
+            setError('IDを入力してください');
+            return;
+        }
+        if (!who) {
+            setError('ログイン完了前です。少し待って再度参加してください。');
             return;
         }
         setLoading(true);
+        setError(null);
         try {
-            const s =
-                await db.doc(
-                    `artifacts/${DATABASE_APP_ID}/public/data/rooms/${id}`
-                ).get();
+            const s = await roomRef(id).get();
             if (!s.exists) {
-                setError("部屋が見つかりません");
+                setError('部屋が見つかりません');
                 setStep('home');
                 setLoading(false);
                 return;
             }
             const data = s.data();
-            setRoom(data);
-            const ps =
-                await db.doc(
-                    `artifacts/${DATABASE_APP_ID}/public/data/rooms/${id}/participants/${user.uid}`
-                ).get();
-            if (data.status === 'closed') {
-                setStep('result');
-            } else if (ps.exists) {
-                setStep('lobby');
-            } else {
-                setStep('register');
-            }
+            setRoom({ id, ...data });
+            const ps = await participantsRef(id).doc(who).get();
+            if (data.status === 'closed') setStep('result');
+            else if (ps.exists) setStep('lobby');
+            else setStep('register');
         } catch (e) {
             console.error(e);
-            setError("部屋への接続に失敗しました");
+            setError('部屋への接続に失敗しました。承認済みドメインとFirestoreルールを確認してください。');
             setStep('home');
         }
         setLoading(false);
     };
-    /* =====================================================
-       Register Participant
-    ===================================================== */
+
     const register = async () => {
-        if (
-            !nickname.trim() ||
-            selectedStartIndex === null
-        ) {
-            return;
-        }
-        await db
-            .doc(
-                `artifacts/${DATABASE_APP_ID}/public/data/rooms/${room.id}/participants/${user.uid}`
-            )
-            .set({
-                uid: user.uid,
-                nickname: nickname.trim(),
-                startIndex: selectedStartIndex,
-                avatarId: selectedAvatarId,
-                lines: []
-            });
-    };
-    /* =====================================================
-       Add Amida Line
-       
-       ★ 2本制限の重要修正版
-    ===================================================== */
-    const addLine = async (idx, yp) => {
-        if (isAdminOnly) return;
-        const me =
-            participants.find(
-                p => p.uid === user.uid
-            );
-        const currentLines =
-            me?.lines?.length || 0;
-        /*
-         * Firestoreにまだ反映されていない
-         * 書き込み中の線も含める。
-         *
-         * 例：
-         *
-         * currentLines = 1
-         * pendingLines = 1
-         *
-         * → 合計2本なので新規追加不可
-         */
-        if (
-            currentLines + pendingLines >= 2
-        ) {
-            return;
-        }
-        /*
-         * クリック直後に即座にロック。
-         */
-        setPendingLines(prev => prev + 1);
+        if (!nickname.trim() || selectedStartIndex === null || !user || !room) return;
+        setError(null);
         try {
-            await db
-                .doc(
-                    `artifacts/${DATABASE_APP_ID}/public/data/rooms/${room.id}/participants/${user.uid}`
-                )
-                .update({
-                    lines:
-                        firebase.firestore.FieldValue.arrayUnion({
-                            lineIndex: idx,
-                            y: yp
-                        })
+            await db.runTransaction(async (tx) => {
+                const rRef = roomRef(room.id);
+                const snap = await tx.get(rRef);
+                if (!snap.exists) throw new Error('missing');
+                if (snap.data().status !== 'open') throw new Error('closed');
+                const taken = snap.data().takenStarts || {};
+                const key = String(selectedStartIndex);
+                if (taken[key] && taken[key] !== user.uid) throw new Error('taken');
+                const pRef = participantsRef(room.id).doc(user.uid);
+                tx.update(rRef, { [`takenStarts.${key}`]: user.uid });
+                tx.set(pRef, {
+                    uid: user.uid,
+                    nickname: nickname.trim(),
+                    startIndex: selectedStartIndex,
+                    avatarId: selectedAvatarId,
+                    lines: []
                 });
+            });
+            setLocalLineCount(0);
         } catch (e) {
             console.error(e);
-        } finally {
-            setPendingLines(prev =>
-                Math.max(0, prev - 1)
-            );
+            setError(e.message === 'taken'
+                ? 'そのスタート位置は先に取られました'
+                : '参加登録に失敗しました');
         }
     };
-    /* =====================================================
-       Close Room
-    ===================================================== */
-    const closeRoom = async () => {
-        /*
-         * 管理者のみ実行可能。
-         */
-        if (!room || room.creatorUid !== user.uid) {
-            return;
-        }
-        /*
-         * まだ2本引き終わっていない参加者がいる場合は
-         * 開始させない。
-         */
-        const incomplete =
-            participants.filter(
-                p => (p.lines?.length || 0) !== 2
-            );
-        if (incomplete.length > 0) {
-            alert(
-                `まだ2本の線を引き終わっていない参加者が ${incomplete.length} 人います。`
-            );
-            return;
-        }
-        await db
-            .doc(
-                `artifacts/${DATABASE_APP_ID}/public/data/rooms/${room.id}`
-            )
-            .update({
-                status: 'closed'
+
+    const addLine = async (idx, yp) => {
+        if (isAdminOnly || !user || !room) return;
+        if (addingRef.current) return;
+        const me = participants.find(p => p.uid === user.uid);
+        const serverCount = me?.lines?.length || 0;
+        const current = Math.max(serverCount, localLineCount);
+        if (current >= 2) return;
+        addingRef.current = true;
+        setLocalLineCount(current + 1);
+        try {
+            await participantsRef(room.id).doc(user.uid).update({
+                lines: firebase.firestore.FieldValue.arrayUnion({
+                    lineIndex: idx,
+                    y: yp
+                })
             });
+        } catch (e) {
+            console.error(e);
+            setLocalLineCount(serverCount);
+            setError('線の保存に失敗しました');
+        } finally {
+            addingRef.current = false;
+        }
     };
-    /* =====================================================
-       Copy Invite
-    ===================================================== */
+
+    const closeRoom = async () => {
+        if (!room || room.creatorUid !== user.uid) return;
+        const incomplete = participants.filter(p => (p.lines?.length || 0) !== 2);
+        if (incomplete.length > 0) {
+            alert(`まだ2本の線を引き終わっていない参加者が ${incomplete.length} 人います。`);
+            return;
+        }
+        await roomRef(room.id).update({ status: 'closed' });
+    };
+
     const copyInvite = () => {
-        const url =
-            `${window.location.origin}${window.location.pathname}?room=${room.id}`;
+        const url = `${window.location.origin}${window.location.pathname}?room=${room.id}`;
         navigator.clipboard.writeText(url);
         setCopySuccess(true);
-        setTimeout(() => {
-            setCopySuccess(false);
-        }, 2000);
+        setTimeout(() => setCopySuccess(false), 2000);
     };
-    /* =====================================================
-       Loading
-    ===================================================== */
+
     if (loading) {
         return (
-            <div className="flex items-center justify-center h-dvh bg-slate-50">
+            <div className="flex flex-col items-center justify-center h-dvh bg-slate-50 gap-3">
                 <div className="loader"></div>
+                <p className="text-xs text-slate-400 font-bold">接続中...</p>
             </div>
         );
     }
-    /* =====================================================
-       Current Participant
-    ===================================================== */
-    const myP =
-        participants.find(
-            p => p.uid === user.uid
-        );
-    const myL =
-        myP?.lines?.length || 0;
-    /*
-     * 現在の実質的な線の本数。
-     *
-     * Firestore反映待ちも含める。
-     */
-    const effectiveMyLines =
-        Math.min(
-            2,
-            myL + pendingLines
-        );
-    /*
-     * 2本完全完了しているか。
-     */
-    const myLinesComplete =
-        myL >= 2 &&
-        pendingLines === 0;
+
+    const myP = participants.find(p => p.uid === user?.uid);
+    const myL = myP?.lines?.length || 0;
+    const effectiveMyLines = Math.min(2, Math.max(myL, localLineCount));
+    const myLinesComplete = myL >= 2;
+    const takenStarts = room?.takenStarts || {};
+
     return (
         <div className="min-h-dvh flex flex-col max-w-md mx-auto relative px-3 py-3 bg-slate-50 overflow-hidden">
-            <div className="fixed top-2 right-2 z-50 text-[10px] font-mono text-slate-300">
-                ver.1.1.0
-            </div>
+            <div className="fixed top-2 right-2 z-50 text-[10px] font-mono text-slate-300">ver.1.1.1</div>
             {error && (
                 <div className="bg-red-500 text-white p-3 rounded-xl mb-2 text-xs font-bold">
                     {error}
                 </div>
             )}
-            {/* =================================================
-                HOME
-            ================================================= */}
             {step === 'home' && (
                 <div className="flex-1 flex flex-col items-center justify-center space-y-6">
                     <div className="text-center">
-                        <img
-                            src={TITLE_IMAGE_URL}
-                            className="w-24 h-24 rounded-[2rem] mx-auto shadow-xl mb-4 border-2 border-white object-cover"
-                        />
-                        <h1 className="text-3xl font-black text-slate-800 leading-tight">
-                            パピ娘の<br />
-                            歌割りあみだ
-                        </h1>
+                        <img src={TITLE_IMAGE_URL} className="w-24 h-24 rounded-[2rem] mx-auto shadow-xl mb-4 border-2 border-white object-cover" />
+                        <h1 className="text-3xl font-black text-slate-800 leading-tight">パピ娘の<br />歌割りあみだ</h1>
                     </div>
                     <div className="w-full space-y-3">
-                        <button
-                            onClick={() => setStep('create')}
-                            className="w-full bg-white border-2 border-slate-100 py-4 rounded-xl font-black text-lg shadow-sm active:scale-95 transition-all"
-                        >
+                        <button onClick={() => setStep('create')} className="w-full bg-white border-2 border-slate-100 py-4 rounded-xl font-black text-lg shadow-sm active:scale-95 transition-all">
                             あみだを作成する
                         </button>
                         <div className="relative py-1 flex items-center justify-center text-[9px] text-slate-300 font-bold uppercase tracking-widest">
                             <span className="w-full border-t"></span>
-                            <span className="px-2 shrink-0">
-                                またはIDで参加
-                            </span>
+                            <span className="px-2 shrink-0">またはIDで参加</span>
                             <span className="w-full border-t"></span>
                         </div>
                         <div className="space-y-2">
@@ -488,194 +320,85 @@ function App() {
                                 type="text"
                                 placeholder="IDを入力"
                                 value={roomIdInput}
-                                onChange={e =>
-                                    setRoomIdInput(
-                                        e.target.value.toUpperCase()
-                                    )
-                                }
+                                onChange={e => setRoomIdInput(e.target.value.toUpperCase())}
                                 className="w-full px-4 py-3 rounded-xl border-2 border-slate-100 focus:border-blue-500 text-center font-mono text-xl tracking-[0.3em]"
                             />
-                            <button
-                                onClick={() =>
-                                    joinRoom(roomIdInput)
-                                }
-                                className="w-full bg-blue-600 text-white font-black py-4 rounded-xl shadow-xl active:scale-95 transition-all"
-                            >
+                            <button onClick={() => joinRoom(roomIdInput)} className="w-full bg-blue-600 text-white font-black py-4 rounded-xl shadow-xl active:scale-95 transition-all">
                                 参加する
                             </button>
                         </div>
                     </div>
                 </div>
             )}
-            {/* =================================================
-                CREATE
-            ================================================= */}
             {step === 'create' && (
-                <CreateRoomView
-                    onCreate={createRoom}
-                    onCancel={() => setStep('home')}
-                />
+                <CreateRoomView onCreate={createRoom} onCancel={() => setStep('home')} />
             )}
-            {/* =================================================
-                REGISTER
-            ================================================= */}
-            {step === 'register' && (
+            {step === 'register' && room && (
                 <div className="flex-1 flex flex-col space-y-4">
-                    <h2 className="text-xl font-black">
-                        参加登録
-                    </h2>
+                    <h2 className="text-xl font-black">参加登録</h2>
                     <div className="bg-white p-5 rounded-[2.5rem] space-y-5 shadow-sm border overflow-y-auto no-scrollbar">
                         <div>
-                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 block">
-                                ニックネーム
-                            </label>
-                            <input
-                                type="text"
-                                placeholder="あなたの名前"
-                                value={nickname}
-                                onChange={e =>
-                                    setNickname(e.target.value)
-                                }
-                                className="w-full p-3 border-2 border-slate-50 rounded-xl font-bold focus:border-blue-500"
-                            />
+                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 block">ニックネーム</label>
+                            <input type="text" placeholder="あなたの名前" value={nickname} onChange={e => setNickname(e.target.value)} className="w-full p-3 border-2 border-slate-50 rounded-xl font-bold focus:border-blue-500" />
                         </div>
                         <div>
-                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 block">
-                                キャラクター
-                            </label>
+                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 block">キャラクター</label>
                             <div className="grid grid-cols-3 gap-2">
                                 {AVATARS.map(a => (
-                                    <button
-                                        key={a.id}
-                                        onClick={() =>
-                                            setSelectedAvatarId(a.id)
-                                        }
-                                        className={`p-1 border-2 rounded-xl transition-all ${
-                                            selectedAvatarId === a.id
-                                                ? 'border-blue-500 bg-blue-50 scale-105'
-                                                : 'border-transparent opacity-40'
-                                        }`}
-                                    >
-                                        <img
-                                            src={a.face}
-                                            className="w-full h-full object-contain"
-                                        />
+                                    <button key={a.id} onClick={() => setSelectedAvatarId(a.id)} className={`p-1 border-2 rounded-xl transition-all ${selectedAvatarId === a.id ? 'border-blue-500 bg-blue-50 scale-105' : 'border-transparent opacity-40'}`}>
+                                        <img src={a.face} className="w-full h-full object-contain" />
                                     </button>
                                 ))}
                             </div>
                         </div>
                         <div>
-                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 block">
-                                スタート位置
-                            </label>
+                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 block">スタート位置</label>
                             <div className="grid grid-cols-5 gap-1.5">
-                                {Array
-                                    .from({
-                                        length: room.lineCount
-                                    })
-                                    .map((_, i) => {
-                                        const taken =
-                                            participants.find(
-                                                p =>
-                                                    p.startIndex === i
-                                            );
-                                        return (
-                                            <button
-                                                key={i}
-                                                disabled={!!taken}
-                                                onClick={() =>
-                                                    setSelectedStartIndex(i)
-                                                }
-                                                className={`p-3 border-2 rounded-xl font-black transition-all ${
-                                                    selectedStartIndex === i
-                                                        ? 'bg-blue-600 text-white border-blue-600'
-                                                        : taken
-                                                            ? 'bg-slate-50 text-slate-100 border-slate-50 opacity-20'
-                                                            : 'text-slate-300 border-slate-50'
-                                                }`}
-                                            >
-                                                {i + 1}
-                                            </button>
-                                        );
-                                    })}
+                                {Array.from({ length: room.lineCount }).map((_, i) => {
+                                    const taken = participants.find(p => p.startIndex === i) || takenStarts[String(i)];
+                                    return (
+                                        <button key={i} disabled={!!taken} onClick={() => setSelectedStartIndex(i)} className={`p-3 border-2 rounded-xl font-black transition-all ${selectedStartIndex === i ? 'bg-blue-600 text-white border-blue-600' : taken ? 'bg-slate-50 text-slate-100 border-slate-50 opacity-20' : 'text-slate-300 border-slate-50'}`}>
+                                            {i + 1}
+                                        </button>
+                                    );
+                                })}
                             </div>
                         </div>
                     </div>
                     <div className="mt-auto space-y-3">
-                        <button
-                            onClick={register}
-                            disabled={
-                                !nickname.trim() ||
-                                selectedStartIndex === null
-                            }
-                            className="w-full bg-blue-600 text-white font-black py-4 rounded-xl shadow-xl disabled:opacity-30"
-                        >
+                        <button onClick={register} disabled={!nickname.trim() || selectedStartIndex === null} className="w-full bg-blue-600 text-white font-black py-4 rounded-xl shadow-xl disabled:opacity-30">
                             参加！
                         </button>
                         {room.creatorUid === user.uid && (
-                            <button
-                                onClick={() => {
-                                    setIsAdminOnly(true);
-                                    setStep('lobby');
-                                }}
-                                className="w-full text-slate-400 text-[11px] font-bold underline decoration-dotted"
-                            >
+                            <button onClick={() => { setIsAdminOnly(true); setStep('lobby'); }} className="w-full text-slate-400 text-[11px] font-bold underline decoration-dotted">
                                 管理者として参加
                             </button>
                         )}
                     </div>
                 </div>
             )}
-            {/* =================================================
-                LOBBY / RESULT
-            ================================================= */}
-            {(step === 'lobby' || step === 'result') && (
+            {(step === 'lobby' || step === 'result') && room && (
                 <div className="flex-1 flex flex-col space-y-2 h-full overflow-hidden">
                     <div className="flex justify-between items-center px-1 shrink-0">
                         <div className="flex-1 min-w-0">
-                            <h2 className="text-lg font-black truncate text-slate-800">
-                                {room.title}
-                            </h2>
+                            <h2 className="text-lg font-black truncate text-slate-800">{room.title}</h2>
                             <div className="flex items-center space-x-2">
-                                <span className="text-[8px] font-black bg-slate-200 text-slate-600 px-2 py-0.5 rounded-full uppercase">
-                                    ID: {room.id}
-                                </span>
-                                <button
-                                    onClick={copyInvite}
-                                    className="bg-blue-50 text-blue-600 text-[8px] font-black px-3 py-0.5 rounded-full"
-                                >
-                                    {copySuccess
-                                        ? 'コピーしました'
-                                        : '招待リンクをコピー'}
+                                <span className="text-[8px] font-black bg-slate-200 text-slate-600 px-2 py-0.5 rounded-full uppercase">ID: {room.id}</span>
+                                <button onClick={copyInvite} className="bg-blue-50 text-blue-600 text-[8px] font-black px-3 py-0.5 rounded-full">
+                                    {copySuccess ? 'コピーしました' : '招待リンクをコピー'}
                                 </button>
                             </div>
                         </div>
                     </div>
                     <div className="flex-1 bg-white rounded-[2rem] border-2 border-slate-100 relative flex flex-col overflow-hidden">
-                        {/* =================================================
-                            STATUS BAR
-                        ================================================= */}
                         {step === 'lobby' && (
                             <div className="p-2 border-b border-slate-50 flex items-center justify-between bg-slate-50/30 shrink-0">
                                 <span className="text-[9px] font-black text-blue-600">
-                                    {isAdminOnly
-                                        ? "管理者モード（進行管理）"
-                                        : effectiveMyLines < 2
-                                            ? `あと ${2 - effectiveMyLines} 本引けます`
-                                            : '2本完了！準備OK！'
-                                    }
+                                    {isAdminOnly ? '管理者モード（進行管理）' : effectiveMyLines < 2 ? `あと ${2 - effectiveMyLines} 本引けます` : '2本完了！準備OK！'}
                                 </span>
-                                <span className="text-[9px] font-black text-slate-400">
-                                    {participants.length}
-                                    {' / '}
-                                    {room.lineCount}
-                                    {' 人参加中'}
-                                </span>
+                                <span className="text-[9px] font-black text-slate-400">{participants.length} / {room.lineCount} 人参加中</span>
                             </div>
                         )}
-                        {/* =================================================
-                            AMIDA
-                        ================================================= */}
                         <div className="flex-1 relative overflow-hidden">
                             <AmidaBoard
                                 room={room}
@@ -686,112 +409,52 @@ function App() {
                                 animationProgress={animationProgress}
                                 myL={effectiveMyLines}
                                 isAdminOnly={isAdminOnly}
-                                showResults={
-                                    step === 'result' &&
-                                    !isAdminOnly
-                                }
+                                showResults={step === 'result' && !isAdminOnly}
                             />
                         </div>
-                        {/* =================================================
-                            BOTTOM CONTROLS
-                        ================================================= */}
                         <div className="p-3 bg-slate-50 border-t shrink-0">
                             {step === 'lobby' ? (
                                 room.creatorUid === user.uid ? (
-                                    <button
-                                        onClick={closeRoom}
-                                        className="w-full bg-slate-900 text-white py-4 rounded-xl font-black shadow-lg"
-                                    >
-                                        あみだを開始する
-                                    </button>
+                                    <button onClick={closeRoom} className="w-full bg-slate-900 text-white py-4 rounded-xl font-black shadow-lg">あみだを開始する</button>
                                 ) : (
-                                    <p className="text-center text-[10px] font-bold text-slate-400 animate-pulse py-1">
-                                        管理者の開始を待機中...
-                                    </p>
+                                    <p className="text-center text-[10px] font-bold text-slate-400 animate-pulse py-1">管理者の開始を待機中...</p>
                                 )
                             ) : (
                                 <div className="space-y-2">
-                                    {/* =========================================
-                                        PARTICIPANT:
-                                        自分の結果を見る
-                                        
-                                        ★ 2本完了するまで存在しない
-                                    ========================================= */}
-                                    {!isAdminOnly &&
-                                     myLinesComplete &&
-                                     !hasViewedMine ? (
+                                    {!isAdminOnly && myLinesComplete && !hasViewedMine ? (
                                         <button
                                             onClick={() => {
                                                 setAnimatingUsers([myP]);
                                                 setAnimationProgress(0);
                                                 setHasViewedMine(true);
-                                                const s =
-                                                    performance.now();
-                                                const animate =
-                                                    (t) => {
-                                                        const p =
-                                                            Math.min(
-                                                                (t - s) / 2800,
-                                                                1
-                                                            );
-                                                        setAnimationProgress(p);
-                                                        if (p < 1) {
-                                                            requestAnimationFrame(
-                                                                animate
-                                                            );
-                                                        }
-                                                    };
-                                                requestAnimationFrame(
-                                                    animate
-                                                );
+                                                const s = performance.now();
+                                                const animate = (t) => {
+                                                    const p = Math.min((t - s) / 2800, 1);
+                                                    setAnimationProgress(p);
+                                                    if (p < 1) requestAnimationFrame(animate);
+                                                };
+                                                requestAnimationFrame(animate);
                                             }}
                                             className="w-full bg-blue-600 text-white py-4 rounded-xl font-black"
                                         >
                                             自分の結果を見る
                                         </button>
                                     ) : null}
-                                    {/* =========================================
-                                        PARTICIPANT:
-                                        アニメーション後
-                                    ========================================= */}
-                                    {!isAdminOnly &&
-                                     myLinesComplete &&
-                                     hasViewedMine && (
-                                        <div className="text-center text-[10px] font-bold text-slate-400 py-2">
-                                            あなたの結果を確認しました
-                                        </div>
+                                    {!isAdminOnly && myLinesComplete && hasViewedMine && (
+                                        <div className="text-center text-[10px] font-bold text-slate-400 py-2">あなたの結果を確認しました</div>
                                     )}
-                                    {/* =========================================
-                                        ADMIN ONLY
-                                        
-                                        ★ 参加者には存在しない
-                                    ========================================= */}
                                     {isAdminOnly && (
                                         <button
                                             onClick={() => {
-                                                setAnimatingUsers(
-                                                    participants
-                                                );
+                                                setAnimatingUsers(participants);
                                                 setAnimationProgress(0);
-                                                const s =
-                                                    performance.now();
-                                                const animate =
-                                                    (t) => {
-                                                        const p =
-                                                            Math.min(
-                                                                (t - s) / 3500,
-                                                                1
-                                                            );
-                                                        setAnimationProgress(p);
-                                                        if (p < 1) {
-                                                            requestAnimationFrame(
-                                                                animate
-                                                            );
-                                                        }
-                                                    };
-                                                requestAnimationFrame(
-                                                    animate
-                                                );
+                                                const s = performance.now();
+                                                const animate = (t) => {
+                                                    const p = Math.min((t - s) / 3500, 1);
+                                                    setAnimationProgress(p);
+                                                    if (p < 1) requestAnimationFrame(animate);
+                                                };
+                                                requestAnimationFrame(animate);
                                             }}
                                             className="w-full bg-slate-900 text-white py-4 rounded-xl font-black shadow-xl"
                                         >
@@ -807,129 +470,49 @@ function App() {
         </div>
     );
 }
-/* =========================================================
-   CreateRoomView
-========================================================= */
-function CreateRoomView({
-    onCreate,
-    onCancel
-}) {
-    const [lineCount, setLineCount] =
-        useState(4);
-    const [title, setTitle] =
-        useState('');
-    const [items, setItems] =
-        useState(Array(4).fill(''));
+
+function CreateRoomView({ onCreate, onCancel }) {
+    const [lineCount, setLineCount] = useState(4);
+    const [title, setTitle] = useState('');
+    const [items, setItems] = useState(Array(4).fill(''));
     useEffect(() => {
         setItems(prev => {
             const next = [...prev];
-            if (next.length < lineCount) {
-                return [
-                    ...next,
-                    ...Array(
-                        lineCount - next.length
-                    ).fill('')
-                ];
-            }
+            if (next.length < lineCount) return [...next, ...Array(lineCount - next.length).fill('')];
             return next.slice(0, lineCount);
         });
     }, [lineCount]);
     return (
         <div className="flex-1 flex flex-col space-y-4 h-full overflow-hidden">
             <div className="flex items-center space-x-3 shrink-0">
-                <button
-                    onClick={onCancel}
-                    className="p-2 bg-white rounded-full border"
-                >
-                    ←
-                </button>
-                <h2 className="text-xl font-black">
-                    あみだを作成
-                </h2>
+                <button onClick={onCancel} className="p-2 bg-white rounded-full border">←</button>
+                <h2 className="text-xl font-black">あみだを作成</h2>
             </div>
             <div className="bg-white p-5 rounded-[2rem] space-y-5 shadow-sm border flex-1 overflow-y-auto no-scrollbar">
-                {/* TITLE */}
                 <div>
-                    <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1 block">
-                        タイトル
-                    </label>
-                    <input
-                        type="text"
-                        placeholder="例：サビ歌割り"
-                        value={title}
-                        onChange={e =>
-                            setTitle(e.target.value)
-                        }
-                        className="w-full p-3 border-2 border-slate-50 rounded-xl font-bold focus:border-blue-500"
-                    />
+                    <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1 block">タイトル</label>
+                    <input type="text" placeholder="例：サビ歌割り" value={title} onChange={e => setTitle(e.target.value)} className="w-full p-3 border-2 border-slate-50 rounded-xl font-bold focus:border-blue-500" />
                 </div>
-                {/* NUMBER */}
                 <div>
                     <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest flex justify-between mb-2">
-                        <span>
-                            人数
-                        </span>
-                        <span className="text-blue-600">
-                            {lineCount}人
-                        </span>
+                        <span>人数</span>
+                        <span className="text-blue-600">{lineCount}人</span>
                     </label>
-                    <input
-                        type="range"
-                        min="2"
-                        max="10"
-                        value={lineCount}
-                        onChange={e =>
-                            setLineCount(
-                                parseInt(
-                                    e.target.value
-                                )
-                            )
-                        }
-                        className="w-full h-2 bg-slate-100 rounded-full appearance-none accent-blue-600"
-                    />
+                    <input type="range" min="2" max="10" value={lineCount} onChange={e => setLineCount(parseInt(e.target.value, 10))} className="w-full h-2 bg-slate-100 rounded-full appearance-none accent-blue-600" />
                 </div>
-                {/* RESULTS */}
                 <div className="space-y-2">
-                    <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">
-                        結果（空欄不可）
-                    </label>
+                    <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">結果（空欄不可）</label>
                     <div className="grid grid-cols-2 gap-2">
-                        {items.map(
-                            (it, idx) => (
-                                <input
-                                    key={idx}
-                                    placeholder={`結果 ${idx + 1}`}
-                                    value={it}
-                                    onChange={e => {
-                                        const n =
-                                            [...items];
-                                        n[idx] =
-                                            e.target.value;
-                                        setItems(n);
-                                    }}
-                                    className="p-3 border-2 border-slate-50 rounded-xl text-sm font-bold focus:border-blue-500"
-                                />
-                            )
-                        )}
+                        {items.map((it, idx) => (
+                            <input key={idx} placeholder={`結果 ${idx + 1}`} value={it} onChange={e => { const n = [...items]; n[idx] = e.target.value; setItems(n); }} className="p-3 border-2 border-slate-50 rounded-xl text-sm font-bold focus:border-blue-500" />
+                        ))}
                     </div>
                 </div>
             </div>
             <button
                 onClick={() => {
-                    if (
-                        title &&
-                        !items.some(x => !x)
-                    ) {
-                        onCreate({
-                            title,
-                            lineCount,
-                            items
-                        });
-                    } else {
-                        alert(
-                            "タイトルと全ての結果を入力してください"
-                        );
-                    }
+                    if (title && !items.some(x => !x)) onCreate({ title, lineCount, items });
+                    else alert('タイトルと全ての結果を入力してください');
                 }}
                 className="bg-blue-600 text-white font-black py-4 rounded-xl shadow-lg shrink-0 mt-2 active:scale-95 transition-all"
             >
@@ -938,507 +521,124 @@ function CreateRoomView({
         </div>
     );
 }
-/* =========================================================
-   AmidaBoard
-========================================================= */
-function AmidaBoard({
-    room,
-    participants,
-    onAddLine,
-    myUid,
-    animatingUsers,
-    animationProgress,
-    myL,
-    isAdminOnly,
-    showResults
-}) {
-    const containerRef =
-        useRef(null);
-    const [dim, setDim] =
-        useState({
-            w: 0,
-            h: 0
-        });
-    /* =====================================================
-       Resize
-    ===================================================== */
+
+function AmidaBoard({ room, participants, onAddLine, myUid, animatingUsers, animationProgress, myL, isAdminOnly, showResults }) {
+    const containerRef = useRef(null);
+    const [dim, setDim] = useState({ w: 0, h: 0 });
     useEffect(() => {
         const up = () => {
             if (containerRef.current) {
-                setDim({
-                    w:
-                        containerRef.current.clientWidth,
-                    h:
-                        containerRef.current.clientHeight
-                });
+                setDim({ w: containerRef.current.clientWidth, h: containerRef.current.clientHeight });
             }
         };
         up();
-        const obs =
-            new ResizeObserver(up);
-        if (containerRef.current) {
-            obs.observe(
-                containerRef.current
-            );
-        }
-        return () =>
-            obs.disconnect();
+        const obs = new ResizeObserver(up);
+        if (containerRef.current) obs.observe(containerRef.current);
+        return () => obs.disconnect();
     }, []);
-    /* =====================================================
-       X position
-    ===================================================== */
     const getX = (i) => {
         const p = 30;
-        return (
-            p +
-            i *
-            (
-                (dim.w - p * 2) /
-                (room.lineCount - 1)
-            )
-        );
+        return p + i * ((dim.w - p * 2) / (room.lineCount - 1));
     };
-    /* =====================================================
-       Winner Map
-       
-       ★ 管理者モードでは表示しない
-    ===================================================== */
-    const revealedWinnerMap =
-        useMemo(() => {
-            /*
-             * 管理者モードでは
-             * ゴール地点に名前を表示しない。
-             */
-            if (
-                isAdminOnly ||
-                !showResults ||
-                animatingUsers.length === 0 ||
-                animationProgress < 1
-            ) {
-                return {};
-            }
-            const map = {};
-            const allLines =
-                participants
-                    .flatMap(
-                        p => p.lines || []
-                    )
-                    .sort(
-                        (a, b) =>
-                            a.y - b.y
-                    );
-            animatingUsers.forEach(p => {
-                let cur =
-                    p.startIndex;
-                allLines.forEach(l => {
-                    if (
-                        l.lineIndex === cur
-                    ) {
-                        cur++;
-                    } else if (
-                        l.lineIndex === cur - 1
-                    ) {
-                        cur--;
-                    }
-                });
-                map[cur] =
-                    p.nickname;
+    const revealedWinnerMap = useMemo(() => {
+        if (isAdminOnly || !showResults || animatingUsers.length === 0 || animationProgress < 1) return {};
+        const map = {};
+        const allLines = participants.flatMap(p => p.lines || []).sort((a, b) => a.y - b.y);
+        animatingUsers.forEach(p => {
+            if (!p) return;
+            let cur = p.startIndex;
+            allLines.forEach(l => {
+                if (l.lineIndex === cur) cur++;
+                else if (l.lineIndex === cur - 1) cur--;
             });
-            return map;
-        }, [
-            isAdminOnly,
-            showResults,
-            animatingUsers,
-            participants,
-            animationProgress
-        ]);
-    /* =====================================================
-       Pointer Event
-    ===================================================== */
+            map[cur] = p.nickname;
+        });
+        return map;
+    }, [isAdminOnly, showResults, animatingUsers, participants, animationProgress]);
+
     const handlePointerDown = (e) => {
-        /*
-         * 管理者は線を引けない。
-         */
-        if (isAdminOnly) {
-            return;
-        }
-        /*
-         * 2本以上なら絶対に追加しない。
-         */
-        if (myL >= 2) {
-            return;
-        }
-        if (!dim.w) {
-            return;
-        }
-        const r =
-            containerRef.current
-                .getBoundingClientRect();
-        const x =
-            e.clientX - r.left;
-        const y =
-            e.clientY - r.top;
+        if (isAdminOnly || myL >= 2 || !dim.w) return;
+        const r = containerRef.current.getBoundingClientRect();
+        const x = e.clientX - r.left;
+        const y = e.clientY - r.top;
         const p = 30;
-        const s =
-            (
-                dim.w - p * 2
-            ) /
-            (room.lineCount - 1);
-        const idx =
-            Math.floor(
-                (
-                    x -
-                    p +
-                    s / 2
-                ) / s
-            );
-        const nearestIdx =
-            Math.max(
-                0,
-                Math.min(
-                    idx,
-                    room.lineCount - 2
-                )
-            );
-        const yp =
-            Math.round(
-                (
-                    (y - 40) /
-                    (dim.h - 95)
-                ) * 100
-            );
-        if (
-            yp > 5 &&
-            yp < 95
-        ) {
-            onAddLine(
-                nearestIdx,
-                yp
-            );
-        }
+        const s = (dim.w - p * 2) / (room.lineCount - 1);
+        const idx = Math.floor((x - p + s / 2) / s);
+        const nearestIdx = Math.max(0, Math.min(idx, room.lineCount - 2));
+        const yp = Math.round(((y - 40) / (dim.h - 95)) * 100);
+        if (yp > 5 && yp < 95) onAddLine(nearestIdx, yp);
     };
+
     return (
-        <div
-            ref={containerRef}
-            className="w-full h-full p-2"
-            onPointerDown={
-                handlePointerDown
-            }
-            style={{
-                touchAction: 'none'
-            }}
-        >
-            <svg
-                className="w-full h-full"
-                style={{
-                    overflow: 'visible'
-                }}
-            >
-                {/* =================================================
-                    VERTICAL LINES
-                ================================================= */}
-                {Array
-                    .from({
-                        length:
-                            room.lineCount
-                    })
-                    .map((_, i) => {
-                        const p =
-                            participants.find(
-                                x =>
-                                    x.startIndex === i
-                            );
-                        const active =
-                            !isAdminOnly &&
-                            p?.uid === myUid &&
-                            myL < 2;
-                        const av =
-                            p
-                                ? AVATARS.find(
-                                    a =>
-                                        a.id ===
-                                        p.avatarId
-                                )
-                                : null;
-                        return (
-                            <g key={i}>
-                                <line
-                                    x1={getX(i)}
-                                    y1="45"
-                                    x2={getX(i)}
-                                    y2={dim.h - 45}
-                                    stroke={
-                                        active
-                                            ? "#3b82f6"
-                                            : "#f1f5f9"
-                                    }
-                                    strokeWidth={
-                                        active
-                                            ? "5"
-                                            : "3"
-                                    }
-                                    strokeLinecap="round"
-                                />
-                                <text
-                                    x={getX(i)}
-                                    y="20"
-                                    textAnchor="middle"
-                                    fontSize="9"
-                                    className={
-                                        `font-black ${
-                                            active
-                                                ? 'fill-blue-600'
-                                                : 'fill-slate-300'
-                                        }`
-                                    }
-                                >
-                                    {p?.nickname || i + 1}
-                                </text>
-                                {av && (
-                                    <image
-                                        href={av.face}
-                                        x={
-                                            getX(i) - 10
-                                        }
-                                        y="25"
-                                        width="20"
-                                        height="20"
-                                        className={
-                                            active
-                                                ? "opacity-100"
-                                                : "opacity-70"
-                                        }
-                                    />
-                                )}
-                            </g>
-                        );
-                    })}
-                {/* =================================================
-                    HORIZONTAL LINES
-                ================================================= */}
-                {participants
-                    .flatMap(
-                        p => p.lines || []
-                    )
-                    .map((l, i) => (
-                        <line
-                            key={i}
-                            x1={
-                                getX(
-                                    l.lineIndex
-                                )
-                            }
-                            y1={
-                                45 +
-                                (l.y / 100) *
-                                (dim.h - 95)
-                            }
-                            x2={
-                                getX(
-                                    l.lineIndex + 1
-                                )
-                            }
-                            y2={
-                                45 +
-                                (l.y / 100) *
-                                (dim.h - 95)
-                            }
-                            stroke="#cbd5e1"
-                            strokeWidth="2.5"
-                            strokeLinecap="round"
-                        />
-                    ))}
-                {/* =================================================
-                    ANIMATION
-                ================================================= */}
-                {animatingUsers.map(p => {
-                    if (!p) {
-                        return null;
-                    }
-                    const allLines =
-                        participants
-                            .flatMap(
-                                x =>
-                                    x.lines || []
-                            )
-                            .sort(
-                                (a, b) =>
-                                    a.y - b.y
-                            );
-                    let cur =
-                        p.startIndex;
-                    const path = [
-                        {
-                            x: cur,
-                            y: 0
-                        }
-                    ];
-                    allLines.forEach(l => {
-                        if (
-                            l.lineIndex === cur
-                        ) {
-                            path.push({
-                                x: cur,
-                                y: l.y
-                            });
-                            cur++;
-                            path.push({
-                                x: cur,
-                                y: l.y
-                            });
-                        } else if (
-                            l.lineIndex === cur - 1
-                        ) {
-                            path.push({
-                                x: cur,
-                                y: l.y
-                            });
-                            cur--;
-                            path.push({
-                                x: cur,
-                                y: l.y
-                            });
-                        }
-                    });
-                    path.push({
-                        x: cur,
-                        y: 100
-                    });
-                    const t =
-                        path.length;
-                    const raw =
-                        animationProgress *
-                        (t - 1);
-                    const pathIndex =
-                        Math.min(
-                            Math.floor(raw),
-                            t - 1
-                        );
-                    const rem =
-                        pathIndex < t - 1
-                            ? raw - pathIndex
-                            : 0;
-                    const currentPoint =
-                        path[pathIndex];
-                    let cx =
-                        getX(
-                            currentPoint.x
-                        );
-                    let cy =
-                        45 +
-                        (
-                            currentPoint.y /
-                            100
-                        ) *
-                        (
-                            dim.h - 95
-                        );
-                    if (
-                        pathIndex <
-                        t - 1
-                    ) {
-                        const p2 =
-                            path[
-                                pathIndex + 1
-                            ];
-                        cx +=
-                            (
-                                getX(p2.x) -
-                                cx
-                            ) *
-                            rem;
-                        cy +=
-                            (
-                                (
-                                    45 +
-                                    (
-                                        p2.y /
-                                        100
-                                    ) *
-                                    (
-                                        dim.h - 95
-                                    )
-                                ) -
-                                cy
-                            ) *
-                            rem;
-                    }
-                    const av =
-                        AVATARS.find(
-                            a =>
-                                a.id ===
-                                p.avatarId
-                        ) ||
-                        AVATARS[0];
+        <div ref={containerRef} className="w-full h-full p-2" onPointerDown={handlePointerDown} style={{ touchAction: 'none' }}>
+            <svg className="w-full h-full" style={{ overflow: 'visible' }}>
+                {Array.from({ length: room.lineCount }).map((_, i) => {
+                    const person = participants.find(x => x.startIndex === i);
+                    const active = !isAdminOnly && person?.uid === myUid && myL < 2;
+                    const av = person ? AVATARS.find(a => a.id === person.avatarId) : null;
                     return (
-                        <image
-                            key={p.uid}
-                            href={av.chibi}
-                            x={cx - 18}
-                            y={cy - 18}
-                            width="36"
-                            height="36"
-                            className="drop-shadow-md"
-                        />
+                        <g key={i}>
+                            <line x1={getX(i)} y1="45" x2={getX(i)} y2={dim.h - 45} stroke={active ? '#3b82f6' : '#f1f5f9'} strokeWidth={active ? '5' : '3'} strokeLinecap="round" />
+                            <text x={getX(i)} y="20" textAnchor="middle" fontSize="9" className={`font-black ${active ? 'fill-blue-600' : 'fill-slate-300'}`}>
+                                {person?.nickname || i + 1}
+                            </text>
+                            {av && <image href={av.face} x={getX(i) - 10} y="25" width="20" height="20" className={active ? 'opacity-100' : 'opacity-70'} />}
+                        </g>
                     );
                 })}
-                {/* =================================================
-                    GOAL
-                ================================================= */}
-                {(room.items || [])
-                    .map((it, i) => (
-                        <g key={i}>
-                            <text
-                                x={getX(i)}
-                                y={dim.h - 25}
-                                textAnchor="middle"
-                                fontSize="10"
-                                className="font-black fill-blue-600 uppercase tracking-tighter"
-                            >
-                                /*
-                                 * 管理者・ロビー：
-                                 * 常に「？」
-                                 *
-                                 * 参加者・結果：
-                                 * 結果を表示
-                                 */
-                                {
-                                    room.status === 'open' ||
-                                    isAdminOnly ||
-                                    !showResults
-                                        ? '?'
-                                        : it
-                                }
+                {participants.flatMap(p => p.lines || []).map((l, i) => (
+                    <line key={i} x1={getX(l.lineIndex)} y1={45 + (l.y / 100) * (dim.h - 95)} x2={getX(l.lineIndex + 1)} y2={45 + (l.y / 100) * (dim.h - 95)} stroke="#cbd5e1" strokeWidth="2.5" strokeLinecap="round" />
+                ))}
+                {animatingUsers.map(p => {
+                    if (!p) return null;
+                    const allLines = participants.flatMap(x => x.lines || []).sort((a, b) => a.y - b.y);
+                    let cur = p.startIndex;
+                    const path = [{ x: cur, y: 0 }];
+                    allLines.forEach(l => {
+                        if (l.lineIndex === cur) {
+                            path.push({ x: cur, y: l.y });
+                            cur++;
+                            path.push({ x: cur, y: l.y });
+                        } else if (l.lineIndex === cur - 1) {
+                            path.push({ x: cur, y: l.y });
+                            cur--;
+                            path.push({ x: cur, y: l.y });
+                        }
+                    });
+                    path.push({ x: cur, y: 100 });
+                    const t = path.length;
+                    const raw = animationProgress * (t - 1);
+                    const pathIndex = Math.min(Math.floor(raw), t - 1);
+                    const rem = pathIndex < t - 1 ? raw - pathIndex : 0;
+                    const currentPoint = path[pathIndex];
+                    let cx = getX(currentPoint.x);
+                    let cy = 45 + (currentPoint.y / 100) * (dim.h - 95);
+                    if (pathIndex < t - 1) {
+                        const p2 = path[pathIndex + 1];
+                        cx += (getX(p2.x) - cx) * rem;
+                        cy += ((45 + (p2.y / 100) * (dim.h - 95)) - cy) * rem;
+                    }
+                    const av = AVATARS.find(a => a.id === p.avatarId) || AVATARS[0];
+                    return <image key={p.uid} href={av.chibi} x={cx - 18} y={cy - 18} width="36" height="36" className="drop-shadow-md" />;
+                })}
+                {(room.items || []).map((it, i) => (
+                    <g key={i}>
+                        <text x={getX(i)} y={dim.h - 25} textAnchor="middle" fontSize="10" className="font-black fill-blue-600 uppercase tracking-tighter">
+                            {room.status === 'open' || isAdminOnly || !showResults ? '?' : it}
+                        </text>
+                        {revealedWinnerMap[i] && (
+                            <text x={getX(i)} y={dim.h - 10} textAnchor="middle" fontSize="8" className="font-black fill-slate-400 tracking-tighter">
+                                {revealedWinnerMap[i]}
                             </text>
-                            {revealedWinnerMap[i] && (
-                                <text
-                                    x={getX(i)}
-                                    y={dim.h - 10}
-                                    textAnchor="middle"
-                                    fontSize="8"
-                                    className="font-black fill-slate-400 tracking-tighter"
-                                >
-                                    {
-                                        revealedWinnerMap[i]
-                                    }
-                                </text>
-                            )}
-                        </g>
-                    ))}
+                        )}
+                    </g>
+                ))}
             </svg>
         </div>
     );
 }
-/* =========================================================
-   React Start
-========================================================= */
-ReactDOM
-    .createRoot(
-        document.getElementById('root')
-    )
-    .render(
-        <App />
-    );
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
 </script>
 </body>
 </html>
