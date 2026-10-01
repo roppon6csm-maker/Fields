@@ -7,7 +7,7 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700;900&display=swap');
-        body { font-family: 'Noto Sans JP', sans-serif; -webkit-tap-highlight-color: transparent; overflow-x: hidden; }
+        body { font-family: 'Noto Sans JP', sans-serif; background: #f8fafc; -webkit-tap-highlight-color: transparent; overflow-x: hidden; }
         .no-scrollbar::-webkit-scrollbar { display: none; }
         .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
         input:focus { outline: none; }
@@ -18,9 +18,8 @@
     </style>
 </head>
 <body class="bg-slate-50">
-<div id="root"></div>
+<div id="root" style="padding:24px;font-weight:700">読み込み中…</div>
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -37,10 +36,9 @@ const firebaseConfig = {
     appId: "1:563406816716:web:f4e638d73684952e634969"
 };
 const APP_ID = "papikko-song-amida";
-const APP_VER = "3.3.5";
+const APP_VER = "3.3.6";
 if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
 const db = firebase.firestore();
-const auth = firebase.auth ? firebase.auth() : null;
 
 const AVATARS = [
     { id: 'green', face: 'https://i.imgur.com/CuAVKZ6.png', chibi: 'https://i.imgur.com/F84QLmL.png' },
@@ -78,7 +76,7 @@ function fallbackUid() {
 }
 
 function App() {
-    const [uid, setUid] = useState(fallbackUid);
+    const [uid] = useState(fallbackUid);
     const [room, setRoom] = useState(null);
     const [participants, setParticipants] = useState([]);
     const [partsReady, setPartsReady] = useState(false);
@@ -99,17 +97,6 @@ function App() {
     const [claimedHost, setClaimedHost] = useState(false);
     const addingRef = useRef(false);
     const booted = useRef(false);
-
-    useEffect(() => {
-        if (!auth) return;
-        const unsub = auth.onAuthStateChanged((user) => {
-            if (user?.uid) {
-                localStorage.setItem(LS_UID, user.uid);
-                setUid(user.uid);
-            }
-        });
-        return () => unsub && unsub();
-    }, []);
 
     useEffect(() => {
         if (booted.current) return;
@@ -184,13 +171,12 @@ function App() {
                 return;
             }
             const data = { id, ...s.data() };
-            const meId = auth?.currentUser?.uid || uid;
-            if (data.creatorUid === meId) rememberHost(id);
-            setClaimedHost(readHosts().includes(id) || data.creatorUid === meId);
+            if (data.creatorUid === uid) rememberHost(id);
+            setClaimedHost(readHosts().includes(id) || data.creatorUid === uid);
             setRoom(data);
-            setEntryDone(localStorage.getItem(entryKey(id, meId)) === '1');
-            setHostOnly(localStorage.getItem(hostOnlyKey(id, meId)) === '1');
-            const ps = await partDoc(id, meId).get();
+            setEntryDone(localStorage.getItem(entryKey(id, uid)) === '1');
+            setHostOnly(localStorage.getItem(hostOnlyKey(id, uid)) === '1');
+            const ps = await partDoc(id, uid).get();
             if (data.status === 'closed') setStep('result');
             else if (ps.exists) setStep('lobby');
             else setStep('register');
@@ -499,4 +485,59 @@ function AmidaBoard({ room, participants, onAddLine, myUid, animatingUsers, anim
         <div ref={containerRef} className="w-full h-full p-2" onPointerDown={handlePointerDown} style={{ touchAction: 'none' }}>
             <svg className="w-full h-full" style={{ overflow: 'visible' }}>
                 {Array.from({ length: room.lineCount }).map((_, i) => {
-                    const person = participants.find
+                    const person = participants.find(x => Number(x.startIndex) === i);
+                    const active = person?.uid === myUid && canDraw && myL < 2;
+                    const av = person ? AVATARS.find(a => a.id === person.avatarId) : null;
+                    return (
+                        <g key={i}>
+                            <line x1={getX(i)} y1="45" x2={getX(i)} y2={dim.h - 45} stroke={active ? '#3b82f6' : '#f1f5f9'} strokeWidth={active ? '5' : '3'} strokeLinecap="round" />
+                            <text x={getX(i)} y="20" textAnchor="middle" fontSize="9" className={`font-black ${active ? 'fill-blue-600' : 'fill-slate-300'}`}>{person?.nickname || i + 1}</text>
+                            {av && <image href={av.face} x={getX(i) - 10} y="25" width="20" height="20" />}
+                        </g>
+                    );
+                })}
+                {participants.flatMap(p => p.lines || []).map((l, i) => (
+                    <line key={i} x1={getX(l.lineIndex)} y1={45 + (l.y / 100) * (dim.h - 95)} x2={getX(l.lineIndex + 1)} y2={45 + (l.y / 100) * (dim.h - 95)} stroke="#cbd5e1" strokeWidth="2.5" strokeLinecap="round" />
+                ))}
+                {animatingUsers.map(p => {
+                    if (!p) return null;
+                    const allLines = participants.flatMap(x => x.lines || []).sort((a, b) => a.y - b.y);
+                    let cur = Number(p.startIndex);
+                    const path = [{ x: cur, y: 0 }];
+                    allLines.forEach(l => {
+                        if (l.lineIndex === cur) { path.push({ x: cur, y: l.y }); cur++; path.push({ x: cur, y: l.y }); }
+                        else if (l.lineIndex === cur - 1) { path.push({ x: cur, y: l.y }); cur--; path.push({ x: cur, y: l.y }); }
+                    });
+                    path.push({ x: cur, y: 100 });
+                    const raw = animationProgress * (path.length - 1);
+                    const pathIndex = Math.min(Math.floor(raw), path.length - 1);
+                    const rem = pathIndex < path.length - 1 ? raw - pathIndex : 0;
+                    let cx = getX(path[pathIndex].x);
+                    let cy = 45 + (path[pathIndex].y / 100) * (dim.h - 95);
+                    if (pathIndex < path.length - 1) {
+                        const p2 = path[pathIndex + 1];
+                        cx += (getX(p2.x) - cx) * rem;
+                        cy += (45 + (p2.y / 100) * (dim.h - 95) - cy) * rem;
+                    }
+                    const av = AVATARS.find(a => a.id === p.avatarId) || AVATARS[0];
+                    return <image key={p.uid} href={av.chibi} x={cx - 18} y={cy - 18} width="36" height="36" />;
+                })}
+                {(room.items || []).map((it, i) => (
+                    <g key={i}>
+                        <text x={getX(i)} y={dim.h - 25} textAnchor="middle" fontSize="10" className="font-black fill-blue-600">{revealGoals ? it : '?'}</text>
+                        {winnerMap[i] && <text x={getX(i)} y={dim.h - 10} textAnchor="middle" fontSize="8" className="font-black fill-slate-400">{winnerMap[i]}</text>}
+                    </g>
+                ))}
+            </svg>
+        </div>
+    );
+}
+
+try {
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+} catch (e) {
+    document.getElementById('root').textContent = '起動できません: ' + e.message;
+}
+</script>
+</body>
+</html>
