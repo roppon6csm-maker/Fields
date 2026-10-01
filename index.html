@@ -35,6 +35,7 @@ const firebaseConfig = {
     appId: "1:563406816716:web:f4e638d73684952e634969"
 };
 const APP_ID = "papikko-song-amida";
+const APP_VER = "3.3.2";
 if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
 const db = firebase.firestore();
 const auth = firebase.auth();
@@ -230,6 +231,7 @@ function App() {
 
     const becomeHostOnly = () => {
         if (!room) return;
+        claimHost();
         localStorage.setItem(hostOnlyKey(room.id, uid), '1');
         setHostOnly(true);
         setStep('lobby');
@@ -237,6 +239,7 @@ function App() {
 
     const joinAsHost = () => {
         if (!room) return;
+        claimHost();
         localStorage.removeItem(hostOnlyKey(room.id, uid));
         setHostOnly(false);
         setSelectedStartIndex(null);
@@ -305,10 +308,11 @@ function App() {
         const owner = (room?.takenStarts || {})[String(i)];
         return !!((person && person.uid !== uid) || (owner && owner !== uid));
     };
+    const openSlots = room ? Array.from({ length: room.lineCount }).map((_, i) => i).filter(i => !slotTaken(i)) : [];
 
     return (
         <div className="min-h-dvh flex flex-col max-w-md mx-auto px-3 py-3 bg-slate-50 overflow-hidden">
-            <div className="fixed top-2 right-2 text-[10px] font-mono text-slate-300">ver.3.3.1</div>
+            <div className="fixed top-2 right-2 text-[10px] font-mono text-slate-300">ver.{APP_VER}</div>
             {error && <div className="bg-red-500 text-white p-3 rounded-xl mb-2 text-xs font-bold">{error}</div>}
 
             {step === 'home' && (
@@ -331,7 +335,10 @@ function App() {
                 <div className="flex-1 flex flex-col space-y-4">
                     <h2 className="text-xl font-black">参加登録</h2>
                     <div className="bg-white p-5 rounded-[2.5rem] space-y-5 border overflow-y-auto no-scrollbar">
-                        <p className="text-[11px] font-bold text-slate-400">{room.title} / {room.lineCount}枠（参加済 {participants.length}人）</p>
+                        <p className="text-[11px] font-bold text-slate-400">{room.title} / 全{room.lineCount}枠中 残り{openSlots.length}枠</p>
+                        {participants.length > 0 && (
+                            <p className="text-[10px] font-bold text-slate-500">参加済: {participants.map(p => `${p.nickname}(${Number(p.startIndex) + 1})`).join('、')}</p>
+                        )}
                         <input value={nickname} onChange={e => setNickname(e.target.value)} placeholder="ニックネーム" className="w-full p-3 border-2 border-slate-50 rounded-xl font-bold" />
                         <div className="grid grid-cols-3 gap-2">
                             {AVATARS.map(a => (
@@ -340,26 +347,17 @@ function App() {
                                 </button>
                             ))}
                         </div>
-                        {!partsReady && <p className="text-center text-[10px] font-bold text-slate-400">参加者を確認しています</p>}
+                        {!partsReady && <p className="text-center text-[10px] font-bold text-slate-400">空き枠を確認しています</p>}
                         <div className="grid grid-cols-5 gap-1.5">
-                            {Array.from({ length: room.lineCount }).map((_, i) => {
-                                const person = occupant(i);
-                                const taken = slotTaken(i);
-                                return (
-                                    <button key={i} disabled={!partsReady || taken} onClick={() => setSelectedStartIndex(i)} className={`p-2 border-2 rounded-xl font-black text-xs ${selectedStartIndex === i ? 'bg-blue-600 text-white border-blue-600' : taken ? 'opacity-40 bg-slate-100' : 'text-slate-300 border-slate-50'}`}>
-                                        <div>{i + 1}</div>
-                                        {person && <div className="text-[8px] truncate">{person.nickname}</div>}
-                                    </button>
-                                );
-                            })}
+                            {openSlots.map(i => (
+                                <button key={i} disabled={!partsReady} onClick={() => setSelectedStartIndex(i)} className={`p-3 border-2 rounded-xl font-black ${selectedStartIndex === i ? 'bg-blue-600 text-white border-blue-600' : 'text-slate-400 border-slate-100'}`}>{i + 1}</button>
+                            ))}
                         </div>
+                        {partsReady && openSlots.length === 0 && <p className="text-center text-[10px] font-bold text-slate-400">空き枠がありません</p>}
                     </div>
-                    <button onClick={register} disabled={!partsReady || !nickname.trim() || selectedStartIndex === null} className="w-full bg-blue-600 text-white font-black py-4 rounded-xl disabled:opacity-30">{isHost ? '管理人として参加する' : '参加！'}</button>
-                    {isHost ? (
-                        <button onClick={becomeHostOnly} className="w-full text-slate-400 text-[11px] font-bold underline">参加者にならず進行だけする</button>
-                    ) : (
-                        <button onClick={claimHost} className="w-full bg-slate-900 text-white text-sm font-black py-3 rounded-xl">この部屋の管理人として入る</button>
-                    )}
+                    <button onClick={register} disabled={!partsReady || !nickname.trim() || selectedStartIndex === null} className="w-full bg-blue-600 text-white font-black py-4 rounded-xl disabled:opacity-30">参加する</button>
+                    <button onClick={() => { claimHost(); register(); }} disabled={!partsReady || !nickname.trim() || selectedStartIndex === null} className="w-full bg-slate-900 text-white font-black py-4 rounded-xl disabled:opacity-30">管理人として参加する</button>
+                    <button onClick={becomeHostOnly} className="w-full text-slate-400 text-[11px] font-bold underline">参加者にならず進行だけする</button>
                 </div>
             )}
 
