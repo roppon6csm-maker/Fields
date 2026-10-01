@@ -47,6 +47,9 @@ const AVATARS = [
 ];
 const TITLE_IMAGE_URL = 'https://lh3.googleusercontent.com/d/1INllaq4V8y-HbTlMyJm-DfFyz5e3aHfn';
 const LS_UID = 'amida_noauth_uid';
+const LS_HOSTS = 'amida_host_rooms';
+const LS_HOST_ONLY = 'amida_host_only_';
+const LS_ENTRY = 'amida_entry_done_';
 
 function getUid() {
     let id = localStorage.getItem(LS_UID);
@@ -56,6 +59,15 @@ function getUid() {
     }
     return id;
 }
+function readHosts() {
+    try { return JSON.parse(localStorage.getItem(LS_HOSTS) || '[]'); } catch (e) { return []; }
+}
+function rememberHost(rid) {
+    const list = readHosts();
+    if (!list.includes(rid)) localStorage.setItem(LS_HOSTS, JSON.stringify([...list, rid]));
+}
+function entryKey(rid, uid) { return LS_ENTRY + rid + '_' + uid; }
+function hostOnlyKey(rid, uid) { return LS_HOST_ONLY + rid + '_' + uid; }
 function roomDoc(id) { return db.doc(`artifacts/${APP_ID}/public/data/rooms/${id}`); }
 function partDoc(rid, uid) { return db.doc(`artifacts/${APP_ID}/public/data/rooms/${rid}/participants/${uid}`); }
 function partsCol(rid) { return db.collection(`artifacts/${APP_ID}/public/data/rooms/${rid}/participants`); }
@@ -77,6 +89,7 @@ function App() {
     const [copySuccess, setCopySuccess] = useState(false);
     const [localLines, setLocalLines] = useState(0);
     const [hostOnly, setHostOnly] = useState(false);
+    const [entryDone, setEntryDone] = useState(false);
     const addingRef = useRef(false);
 
     useEffect(() => {
@@ -87,6 +100,8 @@ function App() {
 
     useEffect(() => {
         if (!room?.id) return;
+        setEntryDone(localStorage.getItem(entryKey(room.id, uid)) === '1');
+        setHostOnly(localStorage.getItem(hostOnlyKey(room.id, uid)) === '1');
         const unsubR = roomDoc(room.id).onSnapshot((s) => {
             if (!s.exists) return;
             const data = s.data();
@@ -113,6 +128,11 @@ function App() {
         };
         try {
             await roomDoc(rid).set(data);
+            rememberHost(rid);
+            localStorage.removeItem(hostOnlyKey(rid, uid));
+            localStorage.removeItem(entryKey(rid, uid));
+            setHostOnly(false);
+            setEntryDone(false);
             setRoom(data);
             setStep('register');
         } catch (e) {
@@ -134,6 +154,8 @@ function App() {
             }
             const data = { id, ...s.data() };
             setRoom(data);
+            setEntryDone(localStorage.getItem(entryKey(id, uid)) === '1');
+            setHostOnly(localStorage.getItem(hostOnlyKey(id, uid)) === '1');
             const ps = await partDoc(id, uid).get();
             if (data.status === 'closed') setStep('result');
             else if (ps.exists) setStep('lobby');
@@ -163,16 +185,40 @@ function App() {
                     avatarId: selectedAvatarId, lines: []
                 });
             });
-            setLocalLines(0);
+            localStorage.removeItem(hostOnlyKey(room.id, uid));
+            localStorage.removeItem(entryKey(room.id, uid));
             setHostOnly(false);
+            setEntryDone(false);
+            setLocalLines(0);
             setStep('lobby');
         } catch (e) {
             setError(e.message === 'taken' ? 'そのスタート位置は先に取られました' : '登録に失敗しました');
         }
     };
 
+    const becomeHostOnly = () => {
+        if (!room) return;
+        localStorage.setItem(hostOnlyKey(room.id, uid), '1');
+        setHostOnly(true);
+        setStep('lobby');
+    };
+
+    const joinAsHost = () => {
+        if (!room) return;
+        localStorage.removeItem(hostOnlyKey(room.id, uid));
+        setHostOnly(false);
+        setSelectedStartIndex(null);
+        setStep('register');
+    };
+
+    const completeEntry = () => {
+        if (!room) return;
+        localStorage.setItem(entryKey(room.id, uid), '1');
+        setEntryDone(true);
+    };
+
     const addLine = async (idx, yp) => {
-        if (!room || addingRef.current || hostOnly) return;
+        if (!room || addingRef.current || hostOnly || entryDone) return;
         const me = participants.find(p => p.uid === uid);
         const current = Math.max((me?.lines || []).length, localLines);
         if (current >= 2) return;
@@ -191,7 +237,7 @@ function App() {
     };
 
     const closeRoom = async () => {
-        if (!room || room.creatorUid !== uid) return;
+        if (!room || !isHost) return;
         await roomDoc(room.id).update({ status: 'closed' });
     };
 
@@ -219,12 +265,17 @@ function App() {
     const myP = participants.find(p => p.uid === uid);
     const myL = Math.min(2, Math.max(myP?.lines?.length || 0, localLines));
     const closed = room?.status === 'closed';
-    const isHost = !!(room && room.creatorUid === uid);
+    const isHost = !!(room && (room.creatorUid === uid || readHosts().includes(room.id)));
     const revealGoals = closed && (isHost || hasViewedMine);
+    const slotTaken = (i) => {
+        const byPerson = participants.find(p => p.startIndex === i && p.uid !== uid);
+        const owner = (room?.takenStarts || {})[String(i)];
+        return !!(byPerson || (owner && owner !== uid));
+    };
 
     return (
         <div className="min-h-dvh flex flex-col max-w-md mx-auto px-3 py-3 bg-slate-50 overflow-hidden">
-            <div className="fixed top-2 right-2 text-[10px] font-mono text-slate-300">ver.3.2.0</div>
+            <div className="fixed top-2 right-2 text-[10px] font-mono text-slate-300">ver.3.3.0</div>
             {error && <div className="bg-red-500 text-white p-3 rounded-xl mb-2 text-xs font-bold">{error}</div>}
 
             {step === 'home' && (
@@ -257,16 +308,16 @@ function App() {
                         </div>
                         <div className="grid grid-cols-5 gap-1.5">
                             {Array.from({ length: room.lineCount }).map((_, i) => {
-                                const taken = participants.find(p => p.startIndex === i) || (room.takenStarts || {})[String(i)];
+                                const taken = slotTaken(i);
                                 return (
-                                    <button key={i} disabled={!!taken} onClick={() => setSelectedStartIndex(i)} className={`p-3 border-2 rounded-xl font-black ${selectedStartIndex === i ? 'bg-blue-600 text-white border-blue-600' : taken ? 'opacity-20' : 'text-slate-300 border-slate-50'}`}>{i + 1}</button>
+                                    <button key={i} disabled={taken} onClick={() => setSelectedStartIndex(i)} className={`p-3 border-2 rounded-xl font-black ${selectedStartIndex === i ? 'bg-blue-600 text-white border-blue-600' : taken ? 'opacity-20' : 'text-slate-300 border-slate-50'}`}>{i + 1}</button>
                                 );
                             })}
                         </div>
                     </div>
-                    <button onClick={register} disabled={!nickname.trim() || selectedStartIndex === null} className="w-full bg-blue-600 text-white font-black py-4 rounded-xl disabled:opacity-30">参加！</button>
+                    <button onClick={register} disabled={!nickname.trim() || selectedStartIndex === null} className="w-full bg-blue-600 text-white font-black py-4 rounded-xl disabled:opacity-30">{isHost ? '管理人として参加する' : '参加！'}</button>
                     {isHost && (
-                        <button onClick={() => { setHostOnly(true); setStep('lobby'); }} className="w-full text-slate-400 text-[11px] font-bold underline">参加者にならず進行だけする</button>
+                        <button onClick={becomeHostOnly} className="w-full text-slate-400 text-[11px] font-bold underline">参加者にならず進行だけする</button>
                     )}
                 </div>
             )}
@@ -284,7 +335,7 @@ function App() {
                         {step === 'lobby' && (
                             <div className="p-2 border-b flex justify-between">
                                 <span className="text-[9px] font-black text-blue-600">
-                                    {hostOnly ? '進行モード' : myL < 2 ? `あと ${2 - myL} 本まで引けます` : '2本まで引き終わり'}
+                                    {hostOnly ? '進行モード' : entryDone ? 'エントリー完了' : myL < 2 ? `あと ${2 - myL} 本まで引けます` : '2本引きました。エントリー完了を押してください'}
                                 </span>
                                 <span className="text-[9px] font-black text-slate-400">{participants.length} / {room.lineCount} 人</span>
                             </div>
@@ -298,18 +349,29 @@ function App() {
                                 animatingUsers={animatingUsers}
                                 animationProgress={animationProgress}
                                 myL={myL}
-                                canDraw={!hostOnly && !closed}
+                                canDraw={!hostOnly && !closed && !entryDone}
                                 revealGoals={revealGoals}
                                 revealNames={closed && animationProgress >= 1 && (isHost || hasViewedMine)}
                             />
                         </div>
-                        <div className="p-3 bg-slate-50 border-t">
+                        <div className="p-3 bg-slate-50 border-t space-y-2">
                             {step === 'lobby' ? (
-                                isHost ? (
-                                    <button onClick={closeRoom} className="w-full bg-slate-900 text-white py-4 rounded-xl font-black">あみだを開始する</button>
-                                ) : (
-                                    <p className="text-center text-[10px] font-bold text-slate-400 py-2">主催者の開始を待っています</p>
-                                )
+                                <>
+                                    {!hostOnly && !entryDone && myL >= 2 && (
+                                        <button onClick={completeEntry} className="w-full bg-blue-600 text-white py-4 rounded-xl font-black">エントリー完了</button>
+                                    )}
+                                    {!hostOnly && entryDone && (
+                                        <p className="text-center text-[10px] font-bold text-slate-400 py-1">エントリー完了。管理人の開始まで結果は見えません</p>
+                                    )}
+                                    {isHost && !myP && (
+                                        <button onClick={joinAsHost} className="w-full bg-white border-2 border-slate-200 text-slate-700 py-3 rounded-xl font-black">管理人として参加する</button>
+                                    )}
+                                    {isHost ? (
+                                        <button onClick={closeRoom} className="w-full bg-slate-900 text-white py-4 rounded-xl font-black">あみだを開始する</button>
+                                    ) : (
+                                        <p className="text-center text-[10px] font-bold text-slate-400 py-2">主催者の開始を待っています</p>
+                                    )}
+                                </>
                             ) : (
                                 <div className="space-y-2">
                                     {!isHost && myP && !hasViewedMine && (
