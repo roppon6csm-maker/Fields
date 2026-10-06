@@ -1,543 +1,1829 @@
+const Express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+
+const app = Express();
+const server = http.createServer(app);
+const io = new Server(server, { maxHttpBufferSize: 35e6 });
+
+const uploadDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir);
+}
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, uploadDir),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    const uniqueName = Date.now() + '-' + Math.round(Math.random() * 1E9) + ext;
+    cb(null, uniqueName);
+  }
+});
+const upload = multer({ storage, limits: { fileSize: 30 * 1024 * 1024 } });
+
+app.use('/uploads', Express.static(uploadDir));
+
+app.get('/api/ping', (req, res) => {
+  res.json({ ok: true, t: Date.now() });
+});
+
+// key: roomId (6文字英数字)
+const rooms = {};
+// 表示名 → roomId（部屋名入力参加用）
+const roomNameToId = {};
+
+function generateRoomId() {
+  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  let id;
+  do {
+    id = '';
+    for (let i = 0; i < 6; i++) {
+      id += chars[Math.floor(Math.random() * chars.length)];
+    }
+  } while (rooms[id]);
+  return id;
+}
+
+function resolveRoomId(roomId, roomName) {
+  if (roomId && rooms[roomId]) return roomId;
+  if (roomName) {
+    const name = String(roomName).trim();
+    if (rooms[name]) return name; // 旧形式・ID直指定
+    if (roomNameToId[name] && rooms[roomNameToId[name]]) return roomNameToId[name];
+  }
+  return null;
+}
+
+const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+setInterval(() => {
+  const now = Date.now();
+  for (const roomId of Object.keys(rooms)) {
+    const room = rooms[roomId];
+    if (!room) continue;
+    if (now - (room.lastActivityAt || 0) > THIRTY_DAYS_MS) {
+      (room.messages || []).forEach(msg => {
+        if (msg.image) {
+          const filename = path.basename(msg.image);
+          const filePath = path.join(uploadDir, filename);
+          if (fs.existsSync(filePath)) fs.unlink(filePath, () => {});
+        }
+      });
+      if (room.name && roomNameToId[room.name] === roomId) {
+        delete roomNameToId[room.name];
+      }
+      io.to(roomId).emit('room_deleted_by_host', { reason: 'inactivity' });
+      delete rooms[roomId];
+      console.log('部屋「' + (room.name || roomId) + '」は30日間無発話のため自動削除されました');
+    }
+  }
+}, 12 * 60 * 60 * 1000);
+
+app.post('/api/upload', upload.single('image'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'ファイルがありません' });
+
+  const imageUrl = '/uploads/' + req.file.filename;
+  const filePath = req.file.path;
+
+  setTimeout(() => {
+    fs.unlink(filePath, (err) => {
+      if (err) return;
+      console.log('フォールバック1時間削除:', req.file.filename);
+    });
+  }, 60 * 60 * 1000);
+
+  res.json({ imageUrl });
+});
+
+function scheduleImageDelete(imageUrl, displaySeconds) {
+  if (!imageUrl) return;
+  const filename = path.basename(imageUrl);
+  const filePath = path.join(uploadDir, filename);
+  const sec = Number(displaySeconds);
+  const safeSec = (isNaN(sec) || sec < 0) ? 3600 : sec;
+  // スクロール遅れ用に表示秒数 + 90秒は実ファイルを残す
+  const delayMs = (Math.max(2, safeSec) + 90) * 1000;
+  setTimeout(() => {
+    fs.unlink(filePath, (err) => {
+      if (err) return;
+      console.log('表示時間+猶予経過により画像削除:', filename, delayMs + 'ms');
+    });
+  }, delayMs);
+}
+
+app.get('/', (req, res) => {
+  res.send(`
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>パピ娘の歌割りあみだ</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700;900&display=swap');
-        body { font-family: 'Noto Sans JP', sans-serif; background: #f8fafc; -webkit-tap-highlight-color: transparent; overflow-x: hidden; }
-        .no-scrollbar::-webkit-scrollbar { display: none; }
-        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
-        input:focus { outline: none; }
-        .loader { border: 4px solid #f3f3f3; border-top: 4px solid #3b82f6; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; }
-        @keyframes spin { to { transform: rotate(360deg); } }
-        @keyframes pulse { 50% { transform: scale(1.03); } }
-        .pulse { animation: pulse 1s ease-in-out infinite; }
-    </style>
-</head>
-<body class="bg-slate-50">
-<div id="root" style="padding:24px;font-weight:700">読み込み中…</div>
-<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
-<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-<script type="text/babel">
-const { useState, useEffect, useRef, useMemo } = React;
-
-const firebaseConfig = {
-    apiKey: "AIzaSyAxf4kGrWJFilI5nnw3YYWct-Pc2DQn7Mo",
-    authDomain: "amida-4402e.firebaseapp.com",
-    projectId: "amida-4402e",
-    storageBucket: "amida-4402e.firebasestorage.app",
-    messagingSenderId: "563406816716",
-    appId: "1:563406816716:web:f4e638d73684952e634969"
-};
-const APP_ID = "papikko-song-amida";
-const APP_VER = "3.3.6";
-if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
-const db = firebase.firestore();
-
-const AVATARS = [
-    { id: 'green', face: 'https://i.imgur.com/CuAVKZ6.png', chibi: 'https://i.imgur.com/F84QLmL.png' },
-    { id: 'orange', face: 'https://i.imgur.com/NXFy6xe.png', chibi: 'https://i.imgur.com/R6OY57k.png' },
-    { id: 'pink', face: 'https://i.imgur.com/FPfPp8I.png', chibi: 'https://i.imgur.com/wUXQD9g.png' },
-    { id: 'red', face: 'https://i.imgur.com/YS21OOw.png', chibi: 'https://i.imgur.com/bSPZH8v.png' },
-    { id: 'blue', face: 'https://i.imgur.com/VKsNUmM.png', chibi: 'https://i.imgur.com/sDvV2zp.png' },
-    { id: 'purple', face: 'https://i.imgur.com/4QVoid0.png', chibi: 'https://i.imgur.com/QoEnzAy.png' }
-];
-const TITLE_IMAGE_URL = 'https://lh3.googleusercontent.com/d/1INllaq4V8y-HbTlMyJm-DfFyz5e3aHfn';
-const LS_UID = 'amida_noauth_uid';
-const LS_HOSTS = 'amida_host_rooms';
-const LS_HOST_ONLY = 'amida_host_only_';
-const LS_ENTRY = 'amida_entry_done_';
-
-function readHosts() {
-    try { return JSON.parse(localStorage.getItem(LS_HOSTS) || '[]'); } catch (e) { return []; }
-}
-function rememberHost(rid) {
-    const list = readHosts();
-    if (!list.includes(rid)) localStorage.setItem(LS_HOSTS, JSON.stringify([...list, rid]));
-}
-function entryKey(rid, uid) { return LS_ENTRY + rid + '_' + uid; }
-function hostOnlyKey(rid, uid) { return LS_HOST_ONLY + rid + '_' + uid; }
-function roomDoc(id) { return db.doc(`artifacts/${APP_ID}/public/data/rooms/${id}`); }
-function partDoc(rid, uid) { return db.doc(`artifacts/${APP_ID}/public/data/rooms/${rid}/participants/${uid}`); }
-function partsCol(rid) { return db.collection(`artifacts/${APP_ID}/public/data/rooms/${rid}/participants`); }
-function fallbackUid() {
-    let id = localStorage.getItem(LS_UID);
-    if (!id) {
-        id = 'd_' + Math.random().toString(36).slice(2, 12);
-        localStorage.setItem(LS_UID, id);
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="robots" content="noindex, nofollow">
+  <title>SimpleChatee - Anonymous Chat</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+  <style>
+    :root {
+      --bg-color: #0f172a;
+      --card-bg: #1e293b;
+      --accent-color: #38bdf8;
+      --text-color: #f8fafc;
+      --text-muted: #94a3b8;
+      --border-color: #334155;
     }
-    return id;
-}
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    html, body { height: 100%; }
+    body {
+      background-color: var(--bg-color);
+      color: var(--text-color);
+      display: flex;
+      justify-content: center;
+      align-items: stretch;
+      height: 100dvh;
+      min-height: 100dvh;
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+    }
+    .container {
+      width: 100%;
+      max-width: 560px;
+      background: var(--card-bg);
+      border-radius: 0;
+      border: 0;
+      border-left: 1px solid var(--border-color);
+      border-right: 1px solid var(--border-color);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      min-height: 0;
+      position: relative;
+    }
+    .header {
+      padding: 6px 10px;
+      border-bottom: 1px solid var(--border-color);
+      background: #111827;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+    .header-row { display: flex; justify-content: space-between; align-items: center; width: 100%; min-width: 0; gap: 6px; }
+    .header-top { flex-wrap: nowrap; }
+    .header .room-name {
+      color: var(--accent-color);
+      font-weight: bold;
+      cursor: pointer;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      overflow: hidden;
+      font-size: 0.95rem;
+      flex: 1 1 auto;
+      min-width: 0;
+      max-width: none;
+    }
+    .header-sub-info {
+      font-size: 0.68rem;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      white-space: nowrap;
+      flex-shrink: 0;
+      margin-left: auto;
+    }
+    .header-copy-btn { background: #334155; color: #f8fafc; border: none; padding: 2px 6px; border-radius: 4px; cursor: pointer; font-size: 0.66rem; line-height: 1.2; flex-shrink: 0; width: auto; margin: 0; }
+    .header-copy-btn:hover { background: #475569; }
+    .version-tag { font-size: 0.58rem; color: #64748b; flex-shrink: 0; }
+    .btn-action-group { display: flex; gap: 6px; width: 100%; align-items: stretch; }
+    .btn-leave {
+      background: #64748b;
+      color: white;
+      border: none;
+      padding: 4px 6px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.72rem;
+      font-weight: bold;
+      flex: 2.2 1 0;
+      min-width: 0;
+      text-align: left;
+      line-height: 1.15;
+      width: auto;
+      margin: 0;
+    }
+    .btn-leave:hover { background: #475569; }
+    .btn-leave .sub-text {
+      font-size: 0.52rem;
+      font-weight: normal;
+      opacity: 0.85;
+      display: block;
+      margin-top: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .btn-host-action {
+      background: #ef4444;
+      color: white;
+      border: none;
+      padding: 4px 4px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.7rem;
+      font-weight: bold;
+      line-height: 1.15;
+      white-space: nowrap;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      flex: 1 1 0;
+      min-width: 0;
+      text-align: center;
+      width: auto;
+      margin: 0;
+    }
+    .btn-host-action:hover { background: #dc2626; }
+    .btn-kick { background: #f59e0b; }
+    .btn-kick:hover { background: #d97706; }
+    .my-rooms-section { margin-bottom: 18px; display: none; }
+    .my-rooms-title { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 8px; font-weight: bold; }
+    .room-card-list { display: flex; flex-direction: column; gap: 8px; }
+    .room-card { background: #0f172a; border: 1px solid var(--border-color); padding: 12px; border-radius: 8px; display: flex; justify-content: space-between; align-items: center; cursor: pointer; transition: 0.2s; }
+    .room-card:hover { border-color: var(--accent-color); background: #172554; }
+    .room-card-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .room-card-name { font-weight: bold; font-size: 0.95rem; color: var(--text-color); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .room-card-meta { font-size: 0.72rem; color: var(--text-muted); }
+    .view {
+      display: none;
+      padding: 20px;
+      flex-direction: column;
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+    }
+    .view.active { display: flex; }
+    #view-chat { padding: 8px 10px 0; overflow: hidden; }
+    label { font-size: 0.85rem; color: var(--text-muted); margin-top: 12px; display: block; }
+    input, textarea, select { width: 100%; padding: 12px; margin-top: 6px; border-radius: 8px; border: 1px solid var(--border-color); background: #0f172a; color: white; outline: none; font-size: 16px; }
+    input:focus, textarea:focus, select:focus { border-color: var(--accent-color); }
+    textarea { resize: none; height: 44px; font-size: 16px; line-height: 1.4; }
+    button { width: 100%; padding: 12px; margin-top: 18px; border-radius: 8px; border: none; background: var(--accent-color); color: #0f172a; font-weight: bold; cursor: pointer; }
+    .btn-secondary { background: #475569; color: white; }
+    .max-members-group { display: flex; gap: 8px; margin-top: 8px; }
+    .max-members-group label { margin: 0; flex: 1; }
+    .max-members-group input[type="radio"] { display: none; }
+    .max-members-group span { display: block; text-align: center; padding: 10px 0; border-radius: 8px; border: 1px solid var(--border-color); background: #0f172a; color: var(--text-muted); cursor: pointer; font-size: 0.9rem; }
+    .max-members-group input[type="radio"]:checked + span { border-color: var(--accent-color); background: #0c4a6e; color: white; font-weight: bold; }
+    #chat-messages {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      -webkit-overflow-scrolling: touch;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding-bottom: 10px;
+    }
+    .message { display: flex; flex-direction: column; width: fit-content; max-width: 80%; padding: 8px 12px; border-radius: 12px; position: relative; word-break: break-word; align-self: flex-start; font-size: 0.85rem; line-height: 1.4; }
+    .message.self { align-self: flex-end; background: #0284c7; color: white; }
+    .message.self .sender { color: #e0f2fe; }
+    .message.user-color-0 { background: #334155; color: #f8fafc; }
+    .message.user-color-1 { background: #1e3a29; color: #f8fafc; border: 1px solid #2e5d40; }
+    .message.user-color-2 { background: #3b2f1e; color: #f8fafc; border: 1px solid #5d4a2e; }
+    .message.user-color-3 { background: #2e1e3b; color: #f8fafc; border: 1px solid #4a2e5d; }
+    .message .sender { font-size: 0.75rem; color: var(--text-muted); margin-bottom: 2px; padding-right: 20px; font-weight: bold; }
+    .message .text-content { white-space: pre-wrap; }
+    .message .del-btn { position: absolute; top: 4px; right: 8px; cursor: pointer; color: #fca5a5; font-size: 0.75rem; opacity: 0; transition: 0.2s; }
+    .message:hover .del-btn { opacity: 1; }
+    .system-notification { text-align: center; font-size: 0.75rem; color: var(--text-muted); margin: 4px 0; align-self: center; }
+    .chat-img { max-width: 100%; max-height: 200px; border-radius: 8px; margin-top: 6px; cursor: pointer; user-select: none; -webkit-user-drag: none; }
+    .chat-img-poster-thumb { width: 100px; height: auto; border-radius: 6px; margin-top: 6px; image-rendering: pixelated; border: 1px dashed #94a3b8; opacity: 0.85; }
+    .expired-img-note { font-size: 0.72rem; color: #f87171; font-style: italic; margin-top: 4px; }
+    .poster-only-note { font-size: 0.68rem; color: #94a3b8; margin-top: 2px; }
+    .input-area {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding-top: 6px;
+      padding-bottom: calc(4px + env(safe-area-inset-bottom));
+      border-top: 1px solid var(--border-color);
+      flex-shrink: 0;
+      background: var(--card-bg);
+    }
+    .typing-indicator { font-size: 0.75rem; color: var(--text-muted); font-style: italic; min-height: 1.1rem; }
+    .input-row { display: flex; gap: 8px; align-items: flex-end; }
+    .file-btn { background: #475569; color: white; padding: 12px; border-radius: 8px; cursor: pointer; font-size: 0.9rem; margin: 0; width: auto; height: 44px; display: flex; align-items: center; justify-content: center; }
+    .input-row button { margin-top: 0; width: auto; }
+    .security-disclaimer { font-size: 0.58rem; color: #94a3b8; line-height: 1.3; margin-top: 2px; padding: 0 2px; }
+    .display-time-row { display: flex; align-items: center; gap: 4px; font-size: 0.68rem; color: var(--text-muted); flex-shrink: 0; }
+    .display-time-row select { width: auto; padding: 2px 4px; margin: 0; font-size: 0.68rem; }
+    #full-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(15, 23, 42, 0.85); backdrop-filter: blur(4px); z-index: 9999; display: none; justify-content: center; align-items: center; }
+    .toast-message { background: #ef4444; color: white; padding: 14px 28px; border-radius: 12px; font-weight: bold; font-size: 1rem; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.5); text-align: center; }
+    .modal-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(15, 23, 42, 0.75); z-index: 10000; display: none; justify-content: center; align-items: center; }
+    .modal-overlay.active { display: flex; }
+    .modal-box { background: var(--card-bg); border: 1px solid var(--border-color); border-radius: 12px; padding: 20px; width: 90%; max-width: 340px; }
+    .modal-box h3 { font-size: 1rem; margin-bottom: 12px; }
+    .modal-box p { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 16px; }
+    .modal-actions { display: flex; gap: 8px; }
+    .modal-actions button { margin: 0; flex: 1; padding: 10px; font-size: 0.85rem; }
+    .modal-member-list { max-height: 200px; overflow-y: auto; margin-bottom: 12px; }
+    .modal-member-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; border-radius: 6px; background: #0f172a; margin-bottom: 6px; font-size: 0.85rem; }
+    .modal-member-item button { width: auto; margin: 0; padding: 4px 10px; font-size: 0.75rem; background: #f59e0b; color: #0f172a; }
+    #image-modal { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.92); z-index: 10001; display: none; justify-content: center; align-items: center; padding: 12px; }
+    #image-modal.active { display: flex; }
+    #image-modal-inner { position: relative; max-width: 100%; max-height: 100%; display: flex; flex-direction: column; align-items: center; }
+    #image-modal-img { max-width: 100vw; max-height: 100vh; object-fit: contain; border-radius: 4px; user-select: none; -webkit-user-drag: none; }
+    #image-modal-close { position: fixed; top: calc(12px + env(safe-area-inset-top)); right: calc(12px + env(safe-area-inset-right)); width: 40px; height: 40px; border-radius: 50%; border: none; background: rgba(248,250,252,0.95); color: #0f172a; font-size: 1.4rem; font-weight: bold; cursor: pointer; z-index: 10002; display: flex; align-items: center; justify-content: center; line-height: 1; box-shadow: 0 2px 10px rgba(0,0,0,0.4); margin: 0; }
+    #image-modal-close:hover { background: #fff; }
+    #image-modal-note { color: #94a3b8; font-size: 0.75rem; margin-top: 8px; text-align: center; }
+    .soft-toast { position: fixed; bottom: calc(24px + env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); background: rgba(30,41,59,0.92); color: #e2e8f0; padding: 8px 16px; border-radius: 8px; font-size: 0.8rem; z-index: 10003; opacity: 0; transition: opacity 0.2s; pointer-events: none; }
+    .soft-toast.show { opacity: 1; }
+  </style>
+</head>
+<body>
 
-function App() {
-    const [uid] = useState(fallbackUid);
-    const [room, setRoom] = useState(null);
-    const [participants, setParticipants] = useState([]);
-    const [partsReady, setPartsReady] = useState(false);
-    const [step, setStep] = useState('home');
-    const [loading, setLoading] = useState(false);
-    const [roomIdInput, setRoomIdInput] = useState('');
-    const [nickname, setNickname] = useState('');
-    const [selectedStartIndex, setSelectedStartIndex] = useState(null);
-    const [selectedAvatarId, setSelectedAvatarId] = useState(AVATARS[0].id);
-    const [error, setError] = useState(null);
-    const [animatingUsers, setAnimatingUsers] = useState([]);
-    const [animationProgress, setAnimationProgress] = useState(0);
-    const [hasViewedMine, setHasViewedMine] = useState(false);
-    const [copySuccess, setCopySuccess] = useState(false);
-    const [localLines, setLocalLines] = useState(0);
-    const [hostOnly, setHostOnly] = useState(false);
-    const [entryDone, setEntryDone] = useState(false);
-    const [claimedHost, setClaimedHost] = useState(false);
-    const addingRef = useRef(false);
-    const booted = useRef(false);
+<div id="full-overlay">
+  <div class="toast-message" id="toast-text">現在満員です</div>
+</div>
+<div id="soft-toast" class="soft-toast">右クリックできません</div>
 
-    useEffect(() => {
-        if (booted.current) return;
-        booted.current = true;
-        const rid = new URLSearchParams(window.location.search).get('room');
-        if (rid) joinRoom(rid.toUpperCase());
-    }, []);
+<div id="image-modal" onclick="closeImageModal(event)">
+  <button type="button" id="image-modal-close" onclick="closeImageModal(event)" aria-label="閉じる">×</button>
+  <div id="image-modal-inner">
+    <img id="image-modal-img" alt="画像" oncontextmenu="return false;" />
+    <div id="image-modal-note"></div>
+  </div>
+</div>
 
-    useEffect(() => {
-        if (!room?.id || !uid) return;
-        setEntryDone(localStorage.getItem(entryKey(room.id, uid)) === '1');
-        setHostOnly(localStorage.getItem(hostOnlyKey(room.id, uid)) === '1');
-        setClaimedHost(readHosts().includes(room.id));
-        setPartsReady(false);
-        const unsubR = roomDoc(room.id).onSnapshot((s) => {
-            if (!s.exists) return;
-            const data = s.data();
-            setRoom(prev => ({ ...prev, ...data, id: room.id }));
-            if (data.creatorUid && data.creatorUid === uid) rememberHost(room.id);
-            if (data.status === 'closed') setStep('result');
-        }, (e) => setError('部屋を読めません: ' + (e.code || e.message)));
-        const unsubP = partsCol(room.id).onSnapshot((s) => {
-            const list = [];
-            s.forEach(d => list.push({ id: d.id, ...d.data(), startIndex: Number(d.data().startIndex) }));
-            setParticipants(list);
-            setPartsReady(true);
-            const me = list.find(p => p.uid === uid);
-            if (me) setLocalLines(prev => Math.max(prev, (me.lines || []).length));
-            if (me && step === 'register') setStep('lobby');
-        }, (e) => setError('参加者を読めません: ' + (e.code || e.message)));
-        return () => { unsubR(); unsubP(); };
-    }, [room?.id, step, uid]);
+<div id="kick-modal" class="modal-overlay">
+  <div class="modal-box">
+    <h3>強制退室</h3>
+    <p>退室させるメンバーを選んでください</p>
+    <div id="kick-member-list" class="modal-member-list"></div>
+    <div class="modal-actions">
+      <button class="btn-secondary" onclick="closeKickModal()">キャンセル</button>
+    </div>
+  </div>
+</div>
 
-    const createRoom = async (config) => {
-        setError(null);
-        const rid = Math.random().toString(36).substring(2, 8).toUpperCase();
-        const data = {
-            id: rid, title: config.title, lineCount: config.lineCount, items: config.items,
-            status: 'open', creatorUid: uid, takenStarts: {}
+<div id="kick-confirm-modal" class="modal-overlay">
+  <div class="modal-box">
+    <h3>確認</h3>
+    <p id="kick-confirm-text">このメンバーを退室させますか？</p>
+    <div class="modal-actions">
+      <button class="btn-secondary" onclick="closeKickConfirmModal()">キャンセル</button>
+      <button id="kick-confirm-btn" style="background:#ef4444;color:white;">退室させる</button>
+    </div>
+  </div>
+</div>
+
+<div class="container">
+  <div class="header">
+    <div class="header-row header-top">
+      <span class="room-name" id="header-room-name" onclick="goHome()">SimpleChatee</span>
+      <span class="version-tag">Ver. 2.0.7</span>
+      <div class="header-sub-info" id="header-room-id-container" style="display: none;">
+        <span id="member-count"></span>
+        <button class="header-copy-btn" onclick="copyRoomLink()">🔗コピー</button>
+        <div class="display-time-row" id="display-time-control" style="display:none;">
+          <span>画像</span>
+          <select id="image-display-select" onchange="changeImageDisplayTime()">
+            <option value="0">粗サムネのみ</option>
+            <option value="1">1秒</option>
+            <option value="3">3秒</option>
+            <option value="5">5秒</option>
+            <option value="3600">1時間</option>
+          </select>
+        </div>
+      </div>
+    </div>
+    <div class="header-row" id="room-action-container" style="display: none;">
+      <div class="btn-action-group">
+        <button class="btn-leave" onclick="leaveRoom()">
+          退室
+          <span class="sub-text">作成者退室でも部屋は残ります</span>
+        </button>
+        <button id="btn-kick" class="btn-host-action btn-kick" onclick="openKickModal()">強制退室</button>
+        <button id="btn-delete-room" class="btn-host-action" onclick="deleteRoom()">部屋削除</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="view-home" class="view active">
+    <h2 style="text-align:center; margin-bottom: 20px;">SimpleChatee</h2>
+    <div id="my-rooms-section" class="my-rooms-section">
+      <div class="my-rooms-title">作成・参加した部屋</div>
+      <div id="my-rooms-list" class="room-card-list"></div>
+    </div>
+    <button onclick="showView('view-create')">新しい部屋を作成</button>
+    <div style="text-align: center; margin: 15px 0; color: var(--text-muted);">- または -</div>
+    <input type="text" id="join-room-name" placeholder="部屋名を入力">
+    <button class="btn-secondary" onclick="checkRoomJoin()">部屋に参加</button>
+    <p style="font-size:0.72rem; color:var(--text-muted); margin-top:12px; text-align:center; line-height:1.4;">
+      招待リンクがある場合はリンクから入室してください。<br>
+      暗号化鍵はリンクに含まれています。
+    </p>
+  </div>
+
+  <div id="view-create" class="view">
+    <h3>部屋を作成</h3>
+    <label>部屋名</label>
+    <input type="text" id="create-room-name" placeholder="例: ひみつの部屋" maxlength="30">
+    <label>最大人数（部屋主含む）</label>
+    <div class="max-members-group">
+      <label><input type="radio" name="max-members" value="3" checked><span>3人</span></label>
+      <label><input type="radio" name="max-members" value="4"><span>4人</span></label>
+      <label><input type="radio" name="max-members" value="5"><span>5人</span></label>
+    </div>
+    <label>あなたのニックネーム</label>
+    <input type="text" id="create-nickname" placeholder="名無し" maxlength="20">
+    <button onclick="createRoom()">作成して入室</button>
+    <button class="btn-secondary" style="margin-top: 10px;" onclick="goHome()">キャンセル</button>
+  </div>
+
+  <div id="view-join" class="view">
+    <h3 id="join-target-room-title">部屋に入室</h3>
+    <label>あなたのニックネーム</label>
+    <input type="text" id="join-nickname" placeholder="名無し" maxlength="20">
+    <p id="join-key-warning" style="font-size:0.75rem; color:#f87171; margin-top:10px; display:none;">
+      暗号化鍵が見つかりません。招待リンクから入室してください。
+    </p>
+    <button onclick="joinRoom()">入室する</button>
+    <button class="btn-secondary" style="margin-top: 10px;" onclick="goHome()">トップに戻る</button>
+  </div>
+
+  <div id="view-chat" class="view">
+    <div id="chat-messages"></div>
+    <div class="input-area">
+      <div id="file-name-preview" style="font-size: 0.75rem; color: var(--accent-color); display: none;"></div>
+      <div id="typing-indicator" class="typing-indicator"></div>
+      <div class="input-row">
+        <label class="file-btn">
+          📷
+          <input type="file" id="file-input" accept="image/*" style="display:none;" onchange="onFileSelected(this)">
+        </label>
+        <textarea id="msg-input" placeholder="メッセージを入力..." oninput="handleTyping()" onkeydown="onKeyDown(event)"></textarea>
+        <button style="margin-top:0; width:auto; padding: 0 16px; height: 44px;" onclick="sendMessage()">送信</button>
+      </div>
+      <div class="security-disclaimer">
+        🔒 チャット内容はE2E暗号化により管理者も閲覧不可です。画像は表示時間経過後に削除されます。粗サムネのみの場合はフル画像をサーバーに保存しません。
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+  const socket = io();
+  let currentRoomId = '';       // URL用 6文字ID
+  let currentRoomName = '';     // 表示名
+  let currentKey = '';
+  let myNickname = '';
+  let userSessionId = '';
+  let selectedFile = null;
+  let isHost = false;
+  let currentMaxMembers = 3;
+  let currentImageDisplaySeconds = 5;
+  let keepAliveTimer = null;
+  let lastChatActivityAt = Date.now();
+  let pendingKickSessionId = null;
+  let pendingKickNickname = null;
+  let typingTimeout = null;
+  let isTyping = false;
+
+  function noteActivity() {
+    lastChatActivityAt = Date.now();
+  }
+
+  function bindVisualViewport() {
+    const vv = window.visualViewport;
+    const shell = document.querySelector('.container');
+    if (!vv || !shell) return;
+    const sync = function() {
+      shell.style.height = vv.height + 'px';
+    };
+    vv.addEventListener('resize', sync);
+    vv.addEventListener('scroll', sync);
+    sync();
+  }
+
+  socket.on('connect', function() {
+    console.log('[Socket.IO] connected:', socket.id);
+    if (currentRoomId && userSessionId) {
+      socket.emit('rejoin_room', {
+        roomId: currentRoomId,
+        sessionId: userSessionId,
+        nickname: myNickname
+      });
+    }
+  });
+
+  socket.on('disconnect', function(reason) {
+    console.log('[Socket.IO] disconnected:', reason);
+    stopKeepAlive();
+  });
+
+  socket.on('room_state_sync', function(data) {
+    if (!data || data.roomId !== currentRoomId) return;
+    updateMemberCount(data.count, data.maxMembers);
+    if (typeof data.imageDisplaySeconds === 'number') {
+      currentImageDisplaySeconds = data.imageDisplaySeconds;
+      const sel = document.getElementById('image-display-select');
+      if (sel) sel.value = String(data.imageDisplaySeconds);
+    }
+    if (Array.isArray(data.messages)) {
+      data.messages.forEach(function(msg) {
+        if (msg.type === 'system') {
+          renderSystemNotification(msg.text, msg.id);
+        } else {
+          noteActivity();
+          renderSingleMessage(msg, true);
+        }
+      });
+    }
+  });
+
+  socket.on('receive_message', function(msg) {
+    if (!msg) return;
+    if (msg.type === 'system') {
+      renderSystemNotification(msg.text, msg.id);
+    } else {
+      noteActivity();
+      renderSingleMessage(msg, false);
+    }
+  });
+
+  socket.on('message_deleted', function(data) {
+    const el = document.getElementById('msg-' + data.msgId);
+    if (el) el.remove();
+  });
+
+  socket.on('update_members', function(data) {
+    if (!data) return;
+    updateMemberCount(data.count, data.maxMembers);
+  });
+
+  socket.on('image_display_changed', function(data) {
+    if (!data) return;
+    currentImageDisplaySeconds = data.seconds;
+    const sel = document.getElementById('image-display-select');
+    if (sel) sel.value = String(data.seconds);
+    noteActivity();
+    renderSystemNotification(data.text, data.id);
+  });
+
+  socket.on('display_typing', function(data) {
+    const indicator = document.getElementById('typing-indicator');
+    if (data.isTyping) {
+      indicator.innerText = data.nickname + ' が入力中...';
+    } else {
+      indicator.innerText = '';
+    }
+  });
+
+  socket.on('room_deleted_by_host', function(data) {
+    const reason = (data && data.reason === 'inactivity')
+      ? '1ヶ月間無発話のため、部屋は自動削除されました。'
+      : '部屋主によってこの部屋は削除されました。';
+    if (currentRoomId) removeRoomFromStorage(currentRoomId);
+    alert(reason);
+    goHome(true);
+  });
+
+  socket.on('force_left', function() {
+    stopKeepAlive();
+    goHome(true);
+  });
+
+  socket.on('room_full_rejected', function() {
+    showToast('現在満員です', function() { goHome(true); });
+  });
+
+  socket.on('members_for_kick', function(data) {
+    const list = document.getElementById('kick-member-list');
+    list.innerHTML = '';
+    if (!data.members || data.members.length === 0) {
+      list.innerHTML = '<p style="font-size:0.8rem;color:var(--text-muted);">他にメンバーがいません</p>';
+      return;
+    }
+    data.members.forEach(function(m) {
+      const div = document.createElement('div');
+      div.className = 'modal-member-item';
+      div.innerHTML = '<span>' + escapeHtml(m.nickname) + '</span>';
+      const btn = document.createElement('button');
+      btn.textContent = '退室';
+      btn.onclick = function() { confirmKick(m.sessionId, m.nickname); };
+      div.appendChild(btn);
+      list.appendChild(div);
+    });
+  });
+
+  function encryptText(plainText, key) {
+    if (!plainText) return '';
+    try {
+      return CryptoJS.AES.encrypt(plainText, key).toString();
+    } catch (e) {
+      return plainText;
+    }
+  }
+
+  function decryptText(cipherText, key) {
+    if (!cipherText) return '';
+    if (!key) return '(鍵がありません)';
+    try {
+      const bytes = CryptoJS.AES.decrypt(cipherText, key);
+      const originalText = bytes.toString(CryptoJS.enc.Utf8);
+      return originalText || '(復号エラー)';
+    } catch (e) {
+      return '(復号失敗)';
+    }
+  }
+
+  // 16バイト → Base64url（約22文字）
+  function generateKey() {
+    const wa = CryptoJS.lib.WordArray.random(16);
+    const b64 = CryptoJS.enc.Base64.stringify(wa);
+    return b64.replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');
+  }
+
+  function getOrCreateSessionId() {
+    let sid = sessionStorage.getItem('userSessionId');
+    if (!sid) {
+      sid = localStorage.getItem('userSessionId');
+      if (!sid) {
+        sid = Math.random().toString(36).substring(2, 10);
+        localStorage.setItem('userSessionId', sid);
+      }
+      sessionStorage.setItem('userSessionId', sid);
+    }
+    return sid;
+  }
+
+  function createUltraLightThumbnail(file) {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const targetWidth = 48;
+          const scale = targetWidth / img.width;
+          canvas.width = targetWidth;
+          canvas.height = Math.max(1, Math.round(img.height * scale));
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          resolve(canvas.toDataURL('image/jpeg', 0.35));
         };
-        try {
-            await roomDoc(rid).set(data);
-            rememberHost(rid);
-            localStorage.removeItem(hostOnlyKey(rid, uid));
-            localStorage.removeItem(entryKey(rid, uid));
-            setHostOnly(false);
-            setEntryDone(false);
-            setClaimedHost(true);
-            setRoom(data);
-            setStep('register');
-        } catch (e) {
-            setError('部屋を作れませんでした（' + (e.code || e.message) + '）');
+        img.src = e.target.result;
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function getKeyFromHash() {
+    const hash = window.location.hash;
+    if (!hash) return '';
+    if (hash.startsWith('#k=')) return decodeURIComponent(hash.substring(3));
+    if (hash.startsWith('#key=')) return decodeURIComponent(hash.substring(5));
+    return '';
+  }
+
+  function setKeyToHash(key) {
+    window.location.hash = 'k=' + encodeURIComponent(key);
+  }
+
+  function getSavedRooms() {
+    try {
+      return JSON.parse(localStorage.getItem('myJoinedRooms') || '{}');
+    } catch (e) {
+      return {};
+    }
+  }
+
+  function saveRoomToStorage(roomId, roomName, nickname, key, isHostFlag) {
+    const store = getSavedRooms();
+    store[roomId] = {
+      roomId: roomId,
+      roomName: roomName,
+      nickname: nickname,
+      key: key,
+      isHost: !!isHostFlag,
+      updatedAt: Date.now()
+    };
+    localStorage.setItem('myJoinedRooms', JSON.stringify(store));
+  }
+
+  function removeRoomFromStorage(roomId) {
+    const store = getSavedRooms();
+    delete store[roomId];
+    localStorage.setItem('myJoinedRooms', JSON.stringify(store));
+  }
+
+  function renderSavedRoomsList() {
+    const store = getSavedRooms();
+    const container = document.getElementById('my-rooms-list');
+    const section = document.getElementById('my-rooms-section');
+    if (!container || !section) return;
+
+    container.innerHTML = '';
+    const ids = Object.keys(store);
+    if (ids.length === 0) {
+      section.style.display = 'none';
+      return;
+    }
+
+    ids.sort(function(a, b) {
+      return (store[b].updatedAt || 0) - (store[a].updatedAt || 0);
+    });
+
+    section.style.display = 'block';
+    ids.forEach(function(id) {
+      const r = store[id];
+      const card = document.createElement('div');
+      card.className = 'room-card';
+      card.onclick = function() { quickJoin(id); };
+      const roleLabel = r.isHost ? '作成者' : '参加者';
+      const displayName = r.roomName || r.roomId || id;
+      card.innerHTML =
+        '<div class="room-card-info">' +
+          '<div class="room-card-name">' + escapeHtml(displayName) + '</div>' +
+          '<div class="room-card-meta">' + escapeHtml(r.nickname || '') + '（' + roleLabel + '）</div>' +
+        '</div>' +
+        '<span style="font-size:0.8rem;color:var(--accent-color);flex-shrink:0;">入室 →</span>';
+      container.appendChild(card);
+    });
+  }
+
+  function quickJoin(roomId) {
+    const store = getSavedRooms();
+    const r = store[roomId];
+    if (!r || !r.key) {
+      currentRoomId = roomId;
+      currentRoomName = (r && r.roomName) || roomId;
+      document.getElementById('join-target-room-title').innerText = '「' + currentRoomName + '」に入室';
+      document.getElementById('join-key-warning').style.display = 'block';
+      showView('view-join');
+      return;
+    }
+
+    currentRoomId = roomId;
+    currentRoomName = r.roomName || roomId;
+    currentKey = r.key;
+    myNickname = r.nickname || 'ゲスト';
+    isHost = !!r.isHost;
+
+    socket.emit('join_room', {
+      roomId: currentRoomId,
+      nickname: myNickname,
+      sessionId: userSessionId
+    }, function(res) {
+      if (res.success) {
+        isHost = res.isHost || isHost;
+        currentRoomId = res.roomId || currentRoomId;
+        currentRoomName = res.roomName || currentRoomName;
+        currentMaxMembers = res.maxMembers || 3;
+        currentImageDisplaySeconds = res.imageDisplaySeconds || 5;
+        saveRoomToStorage(currentRoomId, currentRoomName, myNickname, currentKey, isHost);
+        setupChatView(currentRoomId, currentRoomName, res.messages || [], currentMaxMembers, currentImageDisplaySeconds);
+        if (isHost) startKeepAlive();
+        window.history.pushState({}, '', '?r=' + encodeURIComponent(currentRoomId));
+        setKeyToHash(currentKey);
+      } else {
+        if (res.full) {
+          showToast('現在満員です', function() { goHome(true); });
+        } else {
+          alert(res.error || '入室に失敗しました（部屋が削除された可能性があります）');
+          removeRoomFromStorage(roomId);
+          renderSavedRoomsList();
         }
-    };
+      }
+    });
+  }
 
-    const joinRoom = async (id) => {
-        if (!id) { setError('IDを入力してください'); return; }
-        setLoading(true);
-        setError(null);
-        const timer = setTimeout(() => {
-            setError('接続がタイムアウトしました');
-            setStep('home');
-            setLoading(false);
-        }, 8000);
-        try {
-            const s = await roomDoc(id).get();
-            clearTimeout(timer);
-            if (!s.exists) {
-                setError('部屋が見つかりません');
-                setStep('home');
-                setLoading(false);
-                return;
-            }
-            const data = { id, ...s.data() };
-            if (data.creatorUid === uid) rememberHost(id);
-            setClaimedHost(readHosts().includes(id) || data.creatorUid === uid);
-            setRoom(data);
-            setEntryDone(localStorage.getItem(entryKey(id, uid)) === '1');
-            setHostOnly(localStorage.getItem(hostOnlyKey(id, uid)) === '1');
-            const ps = await partDoc(id, uid).get();
-            if (data.status === 'closed') setStep('result');
-            else if (ps.exists) setStep('lobby');
-            else setStep('register');
-        } catch (e) {
-            clearTimeout(timer);
-            setError('接続に失敗しました（' + (e.code || e.message) + '）');
-            setStep('home');
+  window.onload = function() {
+    userSessionId = getOrCreateSessionId();
+    renderSavedRoomsList();
+    bindVisualViewport();
+
+    const urlParams = new URLSearchParams(window.location.search);
+    const urlRoomRef = urlParams.get('r') || urlParams.get('room');
+    const keyFromHash = getKeyFromHash();
+
+    if (urlRoomRef) {
+      currentRoomId = urlRoomRef;
+      currentRoomName = urlRoomRef;
+      const saved = getSavedRooms()[urlRoomRef];
+      if (saved && saved.key) {
+        currentKey = saved.key;
+        currentRoomName = saved.roomName || urlRoomRef;
+        myNickname = saved.nickname || '';
+        isHost = !!saved.isHost;
+        if (myNickname) {
+          document.getElementById('join-nickname').value = myNickname;
         }
-        setLoading(false);
-    };
+      }
+      if (keyFromHash) {
+        currentKey = keyFromHash;
+      }
+      document.getElementById('join-target-room-title').innerText = '部屋に入室';
+      document.getElementById('join-key-warning').style.display = currentKey ? 'none' : 'block';
+      showView('view-join');
+    }
+  };
 
-    const claimHost = () => {
-        if (!room) return;
-        rememberHost(room.id);
-        setClaimedHost(true);
-    };
+  function showToast(message, callback) {
+    const overlay = document.getElementById('full-overlay');
+    const toast = document.getElementById('toast-text');
+    toast.innerText = message;
+    overlay.style.display = 'flex';
+    setTimeout(() => {
+      overlay.style.display = 'none';
+      if (callback) callback();
+    }, 2000);
+  }
 
-    const register = async (asHost) => {
-        if (!nickname.trim() || selectedStartIndex === null || !room) return;
-        setError(null);
-        if (asHost) claimHost();
-        try {
-            await db.runTransaction(async (tx) => {
-                const rRef = roomDoc(room.id);
-                const snap = await tx.get(rRef);
-                if (!snap.exists) throw new Error('missing');
-                if (snap.data().status !== 'open') throw new Error('closed');
-                const taken = snap.data().takenStarts || {};
-                const key = String(selectedStartIndex);
-                if (taken[key] && taken[key] !== uid) throw new Error('taken');
-                if (participants.some(p => Number(p.startIndex) === selectedStartIndex && p.uid !== uid)) throw new Error('taken');
-                tx.update(rRef, { [`takenStarts.${key}`]: uid });
-                tx.set(partDoc(room.id, uid), {
-                    uid, nickname: nickname.trim(), startIndex: selectedStartIndex,
-                    avatarId: selectedAvatarId, lines: []
-                });
-            });
-            localStorage.removeItem(hostOnlyKey(room.id, uid));
-            localStorage.removeItem(entryKey(room.id, uid));
-            setHostOnly(false);
-            setEntryDone(false);
-            setLocalLines(0);
-            setStep('lobby');
-        } catch (e) {
-            setError(e.message === 'taken' ? 'そのスタート位置は先に取られました' : '登録に失敗しました');
+  function showView(id) {
+    const views = document.querySelectorAll('.view');
+    views.forEach(function(v) { v.classList.remove('active'); });
+    document.getElementById(id).classList.add('active');
+  }
+
+  function goHome(skipLeave) {
+    if (!skipLeave && currentRoomId && userSessionId) {
+      socket.emit('leave_room', {
+        roomId: currentRoomId,
+        sessionId: userSessionId
+      });
+    }
+    stopKeepAlive();
+    currentRoomId = '';
+    currentRoomName = '';
+    currentKey = '';
+    isHost = false;
+    window.history.pushState({}, '', window.location.pathname);
+    window.location.hash = '';
+    document.getElementById('header-room-name').innerText = 'SimpleChatee';
+    document.getElementById('header-room-id-container').style.display = 'none';
+    document.getElementById('member-count').innerText = '';
+    document.getElementById('room-action-container').style.display = 'none';
+    document.getElementById('btn-delete-room').style.display = 'none';
+    document.getElementById('btn-kick').style.display = 'none';
+    document.getElementById('display-time-control').style.display = 'none';
+    renderSavedRoomsList();
+    showView('view-home');
+  }
+
+  function updateMemberCount(count, maxMembers) {
+    const el = document.getElementById('member-count');
+    if (!el) return;
+    const safeCount = Math.max(0, Number(count) || 0);
+    const max = maxMembers || currentMaxMembers || 3;
+    el.innerText = safeCount + '/' + max + '人';
+  }
+
+  function createRoom() {
+    const name = (document.getElementById('create-room-name').value || '').trim();
+    myNickname = (document.getElementById('create-nickname').value || '部屋主').trim().substring(0, 20);
+    const maxMembersRadio = document.querySelector('input[name="max-members"]:checked');
+    const maxMembers = maxMembersRadio ? parseInt(maxMembersRadio.value, 10) : 3;
+
+    if (!name) return alert('部屋名を入力してください');
+    if (name.length > 30) return alert('部屋名は30文字以内にしてください');
+
+    currentKey = generateKey();
+    currentRoomName = name;
+    currentMaxMembers = maxMembers;
+    isHost = true;
+
+    socket.emit('create_room', {
+      name: name,
+      nickname: myNickname,
+      sessionId: userSessionId,
+      maxMembers: maxMembers
+    }, function(res) {
+      if (res.success) {
+        currentRoomId = res.roomId;
+        currentRoomName = res.roomName || name;
+        setKeyToHash(currentKey);
+        saveRoomToStorage(currentRoomId, currentRoomName, myNickname, currentKey, true);
+        setupChatView(currentRoomId, currentRoomName, res.messages || [], maxMembers, res.imageDisplaySeconds || 5);
+        startKeepAlive();
+      } else {
+        alert(res.error || '部屋の作成に失敗しました');
+        currentKey = '';
+        currentRoomId = '';
+        currentRoomName = '';
+        isHost = false;
+      }
+    });
+  }
+
+  function checkRoomJoin() {
+    const roomName = (document.getElementById('join-room-name').value || '').trim();
+    if (!roomName) return alert('部屋名を入力してください');
+    // 部屋名または旧IDのどちらでも可（サーバー側で解決）
+    currentRoomId = '';
+    currentRoomName = roomName;
+    const keyFromHash = getKeyFromHash();
+    if (keyFromHash) currentKey = keyFromHash;
+
+    document.getElementById('join-target-room-title').innerText = '「' + roomName + '」に入室';
+    document.getElementById('join-key-warning').style.display = currentKey ? 'none' : 'block';
+    showView('view-join');
+  }
+
+  function joinRoom() {
+    myNickname = (document.getElementById('join-nickname').value || 'ゲスト').trim().substring(0, 20);
+    if (!currentKey) {
+      alert('暗号化鍵がありません。招待リンクから入室してください。');
+      return;
+    }
+
+    socket.emit('join_room', {
+      roomId: currentRoomId || undefined,
+      roomName: currentRoomName || undefined,
+      nickname: myNickname,
+      sessionId: userSessionId
+    }, function(res) {
+      if (res.success) {
+        isHost = res.isHost || false;
+        currentRoomId = res.roomId;
+        currentRoomName = res.roomName || currentRoomName;
+        currentMaxMembers = res.maxMembers || 3;
+        currentImageDisplaySeconds = res.imageDisplaySeconds || 5;
+        saveRoomToStorage(currentRoomId, currentRoomName, myNickname, currentKey, isHost);
+        setupChatView(currentRoomId, currentRoomName, res.messages || [], currentMaxMembers, currentImageDisplaySeconds);
+        if (isHost) startKeepAlive();
+        window.history.pushState({}, '', '?r=' + encodeURIComponent(currentRoomId));
+        setKeyToHash(currentKey);
+      } else {
+        if (res.full) {
+          showToast('現在満員です', function() { goHome(true); });
+        } else {
+          alert(res.error || '入室に失敗しました');
         }
-    };
+      }
+    });
+  }
 
-    const becomeHostOnly = () => {
-        if (!room) return;
-        claimHost();
-        localStorage.setItem(hostOnlyKey(room.id, uid), '1');
-        setHostOnly(true);
-        setStep('lobby');
-    };
+  function leaveRoom() {
+    if (confirm('本当にこの部屋から退室しますか？\\n\\n※部屋作成者が退室しても部屋は残ります。\\n　部屋を消す場合は「部屋削除」を使ってください。')) {
+      socket.emit('leave_room', {
+        roomId: currentRoomId,
+        sessionId: userSessionId
+      });
+      goHome(true);
+    }
+  }
 
-    const completeEntry = () => {
-        if (!room) return;
-        localStorage.setItem(entryKey(room.id, uid), '1');
-        setEntryDone(true);
-    };
-
-    const addLine = async (idx, yp) => {
-        if (!room || addingRef.current || hostOnly || entryDone || room.status === 'closed') return;
-        const me = participants.find(p => p.uid === uid);
-        const current = Math.max((me?.lines || []).length, localLines);
-        if (current >= 2) return;
-        addingRef.current = true;
-        setLocalLines(current + 1);
-        try {
-            await partDoc(room.id, uid).update({
-                lines: firebase.firestore.FieldValue.arrayUnion({ lineIndex: idx, y: yp })
-            });
-        } catch (e) {
-            setLocalLines((me?.lines || []).length);
-            setError('線を保存できませんでした');
-        } finally {
-            addingRef.current = false;
+  function deleteRoom() {
+    if (confirm('【警告】本当にこの部屋を削除しますか？\\n参加者全員が退室し、部屋は消滅します。')) {
+      const idToRemove = currentRoomId;
+      socket.emit('delete_room', { roomId: currentRoomId }, function(res) {
+        if (res.success) {
+          removeRoomFromStorage(idToRemove);
+          alert('部屋を削除しました');
+          goHome(true);
+        } else {
+          alert(res.error || '削除権限がありません');
         }
+      });
+    }
+  }
+
+  function openKickModal() {
+    socket.emit('get_members_for_kick', { roomId: currentRoomId });
+    document.getElementById('kick-modal').classList.add('active');
+  }
+
+  function closeKickModal() {
+    document.getElementById('kick-modal').classList.remove('active');
+  }
+
+  function confirmKick(sessionId, nickname) {
+    pendingKickSessionId = sessionId;
+    pendingKickNickname = nickname;
+    document.getElementById('kick-confirm-text').innerText = nickname + 'さんを退室させますか？';
+    closeKickModal();
+    document.getElementById('kick-confirm-modal').classList.add('active');
+  }
+
+  function closeKickConfirmModal() {
+    document.getElementById('kick-confirm-modal').classList.remove('active');
+    pendingKickSessionId = null;
+    pendingKickNickname = null;
+  }
+
+  document.getElementById('kick-confirm-btn').onclick = function() {
+    if (!pendingKickSessionId) return;
+    socket.emit('force_kick', {
+      roomId: currentRoomId,
+      targetSessionId: pendingKickSessionId
+    }, function(res) {
+      closeKickConfirmModal();
+      if (!res.success) {
+        alert(res.error || '退室させられませんでした');
+      }
+    });
+  };
+
+  function setupChatView(roomId, roomName, messages, maxMembers, imageDisplaySeconds) {
+    currentRoomId = roomId;
+    currentRoomName = roomName || roomId;
+    currentMaxMembers = maxMembers || 3;
+    currentImageDisplaySeconds = imageDisplaySeconds || 5;
+    noteActivity();
+
+    document.getElementById('header-room-name').innerText = currentRoomName;
+    document.getElementById('header-room-id-container').style.display = 'flex';
+    document.getElementById('room-action-container').style.display = 'flex';
+    document.getElementById('display-time-control').style.display = 'flex';
+
+    const sel = document.getElementById('image-display-select');
+    if (sel) sel.value = String(currentImageDisplaySeconds);
+
+    if (isHost) {
+      document.getElementById('btn-delete-room').style.display = 'flex';
+      document.getElementById('btn-kick').style.display = 'flex';
+    } else {
+      document.getElementById('btn-delete-room').style.display = 'none';
+      document.getElementById('btn-kick').style.display = 'none';
+    }
+
+    window.history.pushState({}, '', '?r=' + encodeURIComponent(currentRoomId));
+    if (currentKey) setKeyToHash(currentKey);
+
+    showView('view-chat');
+
+    const container = document.getElementById('chat-messages');
+    container.innerHTML = '';
+
+    if (messages && messages.length > 0) {
+      messages.forEach(function(msg) {
+        if (msg.type === 'system') {
+          renderSystemNotification(msg.text, msg.id);
+        } else {
+          renderSingleMessage(msg, true);
+        }
+      });
+    }
+  }
+
+  function copyRoomLink() {
+    const url = window.location.origin
+      + '?r=' + encodeURIComponent(currentRoomId)
+      + '#k=' + encodeURIComponent(currentKey);
+    navigator.clipboard.writeText(url).then(function() {
+      alert('招待リンクをコピーしました！\\n（短い部屋IDと暗号化鍵が含まれています）');
+    }).catch(function() {
+      prompt('このリンクをコピーしてください', url);
+    });
+  }
+
+  function changeImageDisplayTime() {
+    const sel = document.getElementById('image-display-select');
+    const seconds = parseInt(sel.value, 10);
+    if (isNaN(seconds) || ![0, 1, 3, 5, 3600].includes(seconds)) return;
+    noteActivity();
+    socket.emit('change_image_display_time', {
+      roomId: currentRoomId,
+      seconds: seconds
+    });
+  }
+
+  function startKeepAlive() {
+    stopKeepAlive();
+    if (!isHost) return;
+    lastChatActivityAt = Date.now();
+    keepAliveTimer = setInterval(function() {
+      if (!socket.connected || !currentRoomId || !isHost) return;
+      if (Date.now() - lastChatActivityAt >= 5 * 60 * 1000) {
+        socket.emit('keep_alive', { roomId: currentRoomId });
+        fetch('/api/ping').catch(function() {});
+      }
+    }, 60 * 1000);
+  }
+
+  function stopKeepAlive() {
+    if (keepAliveTimer) {
+      clearInterval(keepAliveTimer);
+      keepAliveTimer = null;
+    }
+  }
+
+  function onFileSelected(input) {
+    if (input.files && input.files[0]) {
+      selectedFile = input.files[0];
+      const preview = document.getElementById('file-name-preview');
+      preview.innerText = '選択中: ' + selectedFile.name;
+      preview.style.display = 'block';
+    }
+  }
+
+  function handleTyping() {
+    if (!isTyping) {
+      isTyping = true;
+      socket.emit('typing_start', { roomId: currentRoomId });
+    }
+    clearTimeout(typingTimeout);
+    typingTimeout = setTimeout(() => { stopTyping(); }, 2000);
+  }
+
+  function stopTyping() {
+    if (isTyping) {
+      isTyping = false;
+      socket.emit('typing_stop', { roomId: currentRoomId });
+    }
+    clearTimeout(typingTimeout);
+  }
+
+  function onKeyDown(e) {
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    if (!isMobile && e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  }
+
+  async function sendMessage() {
+    const input = document.getElementById('msg-input');
+    const text = input.value.trim();
+    let imageUrl = null;
+    let thumbBase64 = null;
+
+    if (!text && !selectedFile) return;
+    if (!currentKey) {
+      alert('暗号化鍵がありません');
+      return;
+    }
+
+    stopTyping();
+    noteActivity();
+
+    const hasText = !!text;
+    const hasImage = !!selectedFile;
+    let displaySeconds = currentImageDisplaySeconds;
+    if (hasImage && hasText && currentImageDisplaySeconds !== 0) {
+      displaySeconds = 3600;
+    }
+
+    if (selectedFile) {
+      try {
+        thumbBase64 = await createUltraLightThumbnail(selectedFile);
+      } catch (e) {}
+
+      if (displaySeconds !== 0) {
+        const formData = new FormData();
+        formData.append('image', selectedFile);
+        try {
+          const res = await fetch('/api/upload', { method: 'POST', body: formData });
+          const data = await res.json();
+          imageUrl = data.imageUrl;
+        } catch (e) {
+          alert('画像のアップロードに失敗しました');
+          return;
+        }
+      }
+    }
+
+    const encryptedText = text ? encryptText(text, currentKey) : '';
+    const msgId = Math.random().toString(36).substring(2, 10);
+
+    socket.emit('send_message', {
+      msgId: msgId,
+      roomId: currentRoomId,
+      text: encryptedText,
+      image: imageUrl,
+      thumb: thumbBase64,
+      displaySeconds: displaySeconds
+    });
+
+    input.value = '';
+    selectedFile = null;
+    document.getElementById('file-input').value = '';
+    document.getElementById('file-name-preview').style.display = 'none';
+  }
+
+  function deleteMessage(msgId) {
+    socket.emit('delete_message', {
+      roomId: currentRoomId,
+      msgId: msgId
+    });
+  }
+
+  const messageMeta = {};
+
+  function handleImageExpire(imgEl, msgId, thumbBase64, fromStart) {
+    imgEl.style.display = 'none';
+    imgEl.dataset.expired = '1';
+
+    if (thumbBase64) {
+      const thumbImg = document.createElement('img');
+      thumbImg.src = thumbBase64;
+      thumbImg.className = 'chat-img-poster-thumb';
+      thumbImg.title = fromStart ? '粗サムネのみ表示' : '時間経過につき粗サムネのみ表示';
+      thumbImg.style.cursor = 'default';
+      imgEl.parentNode.appendChild(thumbImg);
+
+      const note = document.createElement('div');
+      note.className = 'poster-only-note';
+      note.innerText = fromStart ? '粗サムネのみ表示' : '時間経過につき粗サムネのみ表示';
+      imgEl.parentNode.appendChild(note);
+      return;
+    }
+
+    const note = document.createElement('div');
+    note.className = 'expired-img-note';
+    note.innerText = '🔒 画像の表示期限が切れました';
+    imgEl.parentNode.appendChild(note);
+  }
+
+  // 画面に入ってから表示秒数をカウント（新規メッセージ）
+  // 履歴(isHistory)は postedAt 基準
+  function startImageExpireTimer(imgEl, msgId, thumbBase64, displaySec, postedAt, isHistory) {
+    if (!imgEl || displaySec <= 0) return;
+
+    const runExpire = function(delayMs) {
+      setTimeout(function() {
+        if (imgEl && imgEl.parentNode && imgEl.dataset.expired !== '1') {
+          handleImageExpire(imgEl, msgId, thumbBase64, false);
+        }
+      }, Math.max(0, delayMs));
     };
 
-    const closeRoom = async () => {
-        if (!room || !isHost || participants.length < room.lineCount) return;
-        await roomDoc(room.id).update({ status: 'closed' });
+    if (isHistory) {
+      const elapsed = Date.now() - (postedAt || Date.now());
+      runExpire(displaySec * 1000 - elapsed);
+      return;
+    }
+
+    const startFromVisible = function() {
+      runExpire(displaySec * 1000);
     };
 
-    const copyInvite = async () => {
-        const url = `${window.location.origin}${window.location.pathname}?room=${room.id}`;
-        try { await navigator.clipboard.writeText(url); } catch (e) { prompt('招待リンク', url); }
-        setCopySuccess(true);
-        setTimeout(() => setCopySuccess(false), 2000);
-    };
+    const rect = imgEl.getBoundingClientRect();
+    const inView = rect.top < window.innerHeight && rect.bottom > 0;
+    if (inView) {
+      startFromVisible();
+      return;
+    }
 
-    const play = (users, ms) => {
-        setAnimatingUsers(users);
-        setAnimationProgress(0);
-        const s = performance.now();
-        const animate = (t) => {
-            const p = Math.min((t - s) / ms, 1);
-            setAnimationProgress(p);
-            if (p < 1) requestAnimationFrame(animate);
-        };
-        requestAnimationFrame(animate);
-    };
+    if (!('IntersectionObserver' in window)) {
+      startFromVisible();
+      return;
+    }
 
-    if (loading) return <div className="flex items-center justify-center h-dvh"><div className="loader"></div></div>;
+    const observer = new IntersectionObserver(function(entries) {
+      entries.forEach(function(entry) {
+        if (entry.isIntersecting) {
+          observer.disconnect();
+          startFromVisible();
+        }
+      });
+    }, { threshold: 0.2 });
 
-    const myP = participants.find(p => p.uid === uid);
-    const myL = Math.min(2, Math.max(myP?.lines?.length || 0, localLines));
-    const closed = room?.status === 'closed';
-    const isHost = !!(room && (room.creatorUid === uid || claimedHost || readHosts().includes(room.id)));
-    const full = !!(room && participants.length >= room.lineCount);
-    const revealGoals = closed && (isHost || hasViewedMine);
-    const occupant = (i) => participants.find(p => Number(p.startIndex) === i);
-    const slotTaken = (i) => {
-        const person = occupant(i);
-        const owner = (room?.takenStarts || {})[String(i)];
-        return !!((person && person.uid !== uid) || (owner && owner !== uid));
-    };
-    const openSlots = room ? Array.from({ length: room.lineCount }).map((_, i) => i).filter(i => !slotTaken(i)) : [];
+    observer.observe(imgEl);
+  }
 
-    return (
-        <div className="min-h-dvh flex flex-col max-w-md mx-auto px-3 py-3 bg-slate-50 overflow-hidden">
-            <div className="fixed top-2 right-2 text-[10px] font-mono text-slate-300">ver.{APP_VER}</div>
-            {error && <div className="bg-red-500 text-white p-3 rounded-xl mb-2 text-xs font-bold">{error}</div>}
+  function renderSingleMessage(msg, isHistory) {
+    const container = document.getElementById('chat-messages');
+    if (document.getElementById('msg-' + msg.id)) return;
 
-            {step === 'home' && (
-                <div className="flex-1 flex flex-col items-center justify-center space-y-6">
-                    <div className="text-center">
-                        <img src={TITLE_IMAGE_URL} className="w-24 h-24 rounded-[2rem] mx-auto shadow-xl mb-4 border-2 border-white object-cover" />
-                        <h1 className="text-3xl font-black text-slate-800 leading-tight">パピ娘の<br />歌割りあみだ</h1>
-                    </div>
-                    <button onClick={() => setStep('create')} className="w-full bg-white border-2 border-slate-100 py-4 rounded-xl font-black text-lg shadow-sm">あみだを作成する</button>
-                    <div className="w-full space-y-2">
-                        <input value={roomIdInput} onChange={e => setRoomIdInput(e.target.value.toUpperCase())} placeholder="6桁ID" className="w-full px-4 py-3 rounded-xl border-2 text-center font-mono text-xl tracking-[0.3em]" />
-                        <button onClick={() => joinRoom(roomIdInput)} className="w-full bg-blue-600 text-white font-black py-4 rounded-xl">参加する</button>
-                    </div>
-                </div>
-            )}
+    const div = document.createElement('div');
+    const isSelf = (msg.sessionId === userSessionId);
+    const colorClass = isSelf ? 'self' : ('user-color-' + (msg.colorIndex || 0) % 4);
 
-            {step === 'create' && <CreateRoomView onCreate={createRoom} onCancel={() => setStep('home')} />}
+    div.className = 'message ' + colorClass;
+    div.id = 'msg-' + msg.id;
 
-            {step === 'register' && room && (
-                <div className="flex-1 flex flex-col space-y-3">
-                    <h2 className="text-xl font-black">参加登録</h2>
-                    <div className="bg-white p-5 rounded-[2.5rem] space-y-5 border overflow-y-auto no-scrollbar">
-                        <p className="text-[11px] font-bold text-slate-400">{room.title} / 全{room.lineCount}枠中 残り{openSlots.length}枠</p>
-                        {participants.length > 0 && <p className="text-[10px] font-bold text-slate-500">参加済: {participants.map(p => `${p.nickname}(${Number(p.startIndex) + 1})`).join('、')}</p>}
-                        <input value={nickname} onChange={e => setNickname(e.target.value)} placeholder="ニックネーム" className="w-full p-3 border-2 border-slate-50 rounded-xl font-bold" />
-                        <div className="grid grid-cols-3 gap-2">
-                            {AVATARS.map(a => (
-                                <button key={a.id} onClick={() => setSelectedAvatarId(a.id)} className={`p-1 border-2 rounded-xl ${selectedAvatarId === a.id ? 'border-blue-500 bg-blue-50' : 'opacity-40'}`}>
-                                    <img src={a.face} className="w-full object-contain" />
-                                </button>
-                            ))}
-                        </div>
-                        {!partsReady && <p className="text-center text-[10px] font-bold text-slate-400">空き枠を確認しています</p>}
-                        <div className="grid grid-cols-5 gap-1.5">
-                            {openSlots.map(i => (
-                                <button key={i} disabled={!partsReady} onClick={() => setSelectedStartIndex(i)} className={`p-3 border-2 rounded-xl font-black ${selectedStartIndex === i ? 'bg-blue-600 text-white border-blue-600' : 'text-slate-400 border-slate-100'}`}>{i + 1}</button>
-                            ))}
-                        </div>
-                    </div>
-                    <button onClick={() => register(false)} disabled={!partsReady || !nickname.trim() || selectedStartIndex === null} className="w-full bg-blue-600 text-white font-black py-4 rounded-xl disabled:opacity-30">参加する</button>
-                    <button onClick={() => register(true)} disabled={!partsReady || !nickname.trim() || selectedStartIndex === null} className="w-full bg-slate-900 text-white font-black py-4 rounded-xl disabled:opacity-30">管理人として参加する</button>
-                    <button onClick={becomeHostOnly} className="w-full text-slate-400 text-[11px] font-bold underline">参加者にならず進行だけする</button>
-                </div>
-            )}
+    const plainText = msg.text ? decryptText(msg.text, currentKey) : '';
+    const displaySec = (typeof msg.displaySeconds === 'number') ? msg.displaySeconds : currentImageDisplaySeconds;
+    const postedAt = msg.postedAt || Date.now();
 
-            {(step === 'lobby' || step === 'result') && room && (
-                <div className="flex-1 flex flex-col space-y-2 overflow-hidden">
-                    <div>
-                        <h2 className="text-lg font-black truncate">{room.title}</h2>
-                        <div className="flex items-center space-x-2">
-                            <span className="text-[8px] font-black bg-slate-200 px-2 py-0.5 rounded-full">ID: {room.id}</span>
-                            {isHost && <span className="text-[8px] font-black bg-slate-900 text-white px-2 py-0.5 rounded-full">あなたは管理人</span>}
-                            <button onClick={copyInvite} className="bg-blue-50 text-blue-600 text-[8px] font-black px-3 py-0.5 rounded-full">{copySuccess ? 'コピーしました' : '招待リンクをコピー'}</button>
-                        </div>
-                    </div>
-                    <div className="flex-1 bg-white rounded-[2rem] border-2 flex flex-col overflow-hidden">
-                        {step === 'lobby' && !hostOnly && (
-                            <div className={`p-3 border-b ${entryDone ? 'bg-emerald-50' : 'bg-amber-50'}`}>
-                                <p className={`text-sm font-black ${entryDone ? 'text-emerald-700' : 'text-amber-700'}`}>
-                                    {entryDone ? 'エントリー完了' : `横線 ${myL}/2。エントリー完了まで未参加`}
-                                </p>
-                                <p className="text-[11px] font-bold text-slate-500">{entryDone ? 'この画面を閉じても参加は残ります' : '縦線のあいだを2回タップして、下のボタンを押してください'}</p>
-                            </div>
-                        )}
-                        {step === 'lobby' && hostOnly && (
-                            <div className="p-3 border-b bg-slate-900 text-white text-sm font-black">進行モード。参加者にはなりません</div>
-                        )}
-                        <div className="flex-1">
-                            <AmidaBoard
-                                room={room}
-                                participants={participants}
-                                onAddLine={addLine}
-                                myUid={uid}
-                                animatingUsers={animatingUsers}
-                                animationProgress={animationProgress}
-                                myL={myL}
-                                canDraw={!hostOnly && !closed && !entryDone}
-                                revealGoals={revealGoals}
-                                revealNames={closed && animationProgress >= 1 && (isHost || hasViewedMine)}
-                            />
-                        </div>
-                        <div className="p-3 bg-slate-50 border-t space-y-2">
-                            {step === 'lobby' ? (
-                                <>
-                                    {!hostOnly && !entryDone && (
-                                        <button disabled={myL < 2} onClick={completeEntry} className={`w-full py-5 rounded-xl font-black text-lg ${myL >= 2 ? 'bg-blue-600 text-white pulse' : 'bg-slate-200 text-slate-400'}`}>
-                                            {myL >= 2 ? 'エントリー完了' : `あと ${2 - myL} 本引いてエントリー完了`}
-                                        </button>
-                                    )}
-                                    {!hostOnly && entryDone && !isHost && (
-                                        <p className="text-center text-xs font-black text-slate-500 py-3">{full ? '全員揃いました。管理人の締め切りを待っています' : '全員が揃うまで結果は出ません'}</p>
-                                    )}
-                                    {isHost && !full && (
-                                        <p className="text-center text-xs font-black text-slate-500 py-2">全員揃うまで締め切りできません（{participants.length}/{room.lineCount}）</p>
-                                    )}
-                                    {isHost && full && (
-                                        <button onClick={closeRoom} className="w-full bg-slate-900 text-white py-4 rounded-xl font-black">エントリーを締め切ってアミダをみる</button>
-                                    )}
-                                </>
-                            ) : (
-                                <div className="space-y-2">
-                                    {myP && !hasViewedMine && (
-                                        <button onClick={() => { setHasViewedMine(true); play([myP], 2800); }} className="w-full bg-blue-600 text-white py-4 rounded-xl font-black">結果を見る</button>
-                                    )}
-                                    {isHost && (
-                                        <button onClick={() => play(participants, 3500)} className="w-full bg-slate-900 text-white py-4 rounded-xl font-black">全員の結果を見る</button>
-                                    )}
-                                    {myP && hasViewedMine && !isHost && (
-                                        <p className="text-center text-[10px] font-bold text-slate-400 py-2">結果を確認しました</p>
-                                    )}
-                                </div>
-                            )}
-                        </div>
-                    </div>
-                </div>
-            )}
-        </div>
-    );
-}
+    if (msg.image || (displaySec === 0 && msg.thumb) || msg.thumb) {
+      messageMeta[msg.id] = {
+        image: msg.image || null,
+        thumb: msg.thumb || null,
+        displaySeconds: displaySec,
+        postedAt: postedAt,
+        thumbOnly: displaySec === 0 || !msg.image
+      };
+    }
 
-function CreateRoomView({ onCreate, onCancel }) {
-    const [lineCount, setLineCount] = useState(4);
-    const [title, setTitle] = useState('');
-    const [items, setItems] = useState(Array(4).fill(''));
-    useEffect(() => {
-        setItems(prev => prev.length < lineCount ? [...prev, ...Array(lineCount - prev.length).fill('')] : prev.slice(0, lineCount));
-    }, [lineCount]);
-    return (
-        <div className="flex-1 flex flex-col space-y-4 overflow-hidden">
-            <div className="flex items-center space-x-3">
-                <button onClick={onCancel} className="p-2 bg-white rounded-full border">←</button>
-                <h2 className="text-xl font-black">あみだを作成</h2>
-            </div>
-            <div className="bg-white p-5 rounded-[2rem] space-y-5 border flex-1 overflow-y-auto no-scrollbar">
-                <input value={title} onChange={e => setTitle(e.target.value)} placeholder="例：サビ歌割り" className="w-full p-3 border-2 border-slate-50 rounded-xl font-bold" />
-                <label className="text-[9px] font-black text-slate-400 flex justify-between"><span>人数</span><span className="text-blue-600">{lineCount}人</span></label>
-                <input type="range" min="2" max="10" value={lineCount} onChange={e => setLineCount(parseInt(e.target.value, 10))} className="w-full accent-blue-600" />
-                <div className="grid grid-cols-2 gap-2">
-                    {items.map((it, idx) => (
-                        <input key={idx} placeholder={`結果 ${idx + 1}`} value={it} onChange={e => { const n = [...items]; n[idx] = e.target.value; setItems(n); }} className="p-3 border-2 border-slate-50 rounded-xl text-sm font-bold" />
-                    ))}
-                </div>
-            </div>
-            <button onClick={() => { if (title && !items.some(x => !x)) onCreate({ title, lineCount, items }); else alert('タイトルと全ての結果を入力'); }} className="bg-blue-600 text-white font-black py-4 rounded-xl">公開してお友達を呼ぶ</button>
-        </div>
-    );
-}
+    let html = '';
+    if (isSelf) {
+      html += '<span class="del-btn" onclick="deleteMessage(\\'' + msg.id + '\\')">✕</span>';
+    }
+    html += '<div class="sender">' + escapeHtml(msg.senderName) + '</div>';
+    if (plainText) {
+      html += '<div class="text-content">' + escapeHtml(plainText) + '</div>';
+    }
 
-function AmidaBoard({ room, participants, onAddLine, myUid, animatingUsers, animationProgress, myL, canDraw, revealGoals, revealNames }) {
-    const containerRef = useRef(null);
-    const [dim, setDim] = useState({ w: 0, h: 0 });
-    useEffect(() => {
-        const up = () => { if (containerRef.current) setDim({ w: containerRef.current.clientWidth, h: containerRef.current.clientHeight }); };
-        up();
-        const obs = new ResizeObserver(up);
-        if (containerRef.current) obs.observe(containerRef.current);
-        return () => obs.disconnect();
-    }, []);
-    const getX = (i) => { const p = 30; return p + i * ((dim.w - p * 2) / Math.max(1, room.lineCount - 1)); };
-    const winnerMap = useMemo(() => {
-        if (!revealNames) return {};
-        const map = {};
-        const allLines = participants.flatMap(p => p.lines || []).sort((a, b) => a.y - b.y);
-        animatingUsers.forEach(p => {
-            if (!p) return;
-            let cur = Number(p.startIndex);
-            allLines.forEach(l => { if (l.lineIndex === cur) cur++; else if (l.lineIndex === cur - 1) cur--; });
-            map[cur] = p.nickname;
-        });
-        return map;
-    }, [revealNames, animatingUsers, participants]);
-    const handlePointerDown = (e) => {
-        if (!canDraw || myL >= 2 || !dim.w) return;
-        const r = containerRef.current.getBoundingClientRect();
-        const x = e.clientX - r.left, y = e.clientY - r.top, p = 30;
-        const s = (dim.w - p * 2) / Math.max(1, room.lineCount - 1);
-        const nearestIdx = Math.max(0, Math.min(Math.floor((x - p + s / 2) / s), room.lineCount - 2));
-        const yp = Math.round(((y - 40) / (dim.h - 95)) * 100);
-        if (yp > 5 && yp < 95) onAddLine(nearestIdx, yp);
-    };
-    return (
-        <div ref={containerRef} className="w-full h-full p-2" onPointerDown={handlePointerDown} style={{ touchAction: 'none' }}>
-            <svg className="w-full h-full" style={{ overflow: 'visible' }}>
-                {Array.from({ length: room.lineCount }).map((_, i) => {
-                    const person = participants.find(x => Number(x.startIndex) === i);
-                    const active = person?.uid === myUid && canDraw && myL < 2;
-                    const av = person ? AVATARS.find(a => a.id === person.avatarId) : null;
-                    return (
-                        <g key={i}>
-                            <line x1={getX(i)} y1="45" x2={getX(i)} y2={dim.h - 45} stroke={active ? '#3b82f6' : '#f1f5f9'} strokeWidth={active ? '5' : '3'} strokeLinecap="round" />
-                            <text x={getX(i)} y="20" textAnchor="middle" fontSize="9" className={`font-black ${active ? 'fill-blue-600' : 'fill-slate-300'}`}>{person?.nickname || i + 1}</text>
-                            {av && <image href={av.face} x={getX(i) - 10} y="25" width="20" height="20" />}
-                        </g>
-                    );
-                })}
-                {participants.flatMap(p => p.lines || []).map((l, i) => (
-                    <line key={i} x1={getX(l.lineIndex)} y1={45 + (l.y / 100) * (dim.h - 95)} x2={getX(l.lineIndex + 1)} y2={45 + (l.y / 100) * (dim.h - 95)} stroke="#cbd5e1" strokeWidth="2.5" strokeLinecap="round" />
-                ))}
-                {animatingUsers.map(p => {
-                    if (!p) return null;
-                    const allLines = participants.flatMap(x => x.lines || []).sort((a, b) => a.y - b.y);
-                    let cur = Number(p.startIndex);
-                    const path = [{ x: cur, y: 0 }];
-                    allLines.forEach(l => {
-                        if (l.lineIndex === cur) { path.push({ x: cur, y: l.y }); cur++; path.push({ x: cur, y: l.y }); }
-                        else if (l.lineIndex === cur - 1) { path.push({ x: cur, y: l.y }); cur--; path.push({ x: cur, y: l.y }); }
-                    });
-                    path.push({ x: cur, y: 100 });
-                    const raw = animationProgress * (path.length - 1);
-                    const pathIndex = Math.min(Math.floor(raw), path.length - 1);
-                    const rem = pathIndex < path.length - 1 ? raw - pathIndex : 0;
-                    let cx = getX(path[pathIndex].x);
-                    let cy = 45 + (path[pathIndex].y / 100) * (dim.h - 95);
-                    if (pathIndex < path.length - 1) {
-                        const p2 = path[pathIndex + 1];
-                        cx += (getX(p2.x) - cx) * rem;
-                        cy += (45 + (p2.y / 100) * (dim.h - 95) - cy) * rem;
-                    }
-                    const av = AVATARS.find(a => a.id === p.avatarId) || AVATARS[0];
-                    return <image key={p.uid} href={av.chibi} x={cx - 18} y={cy - 18} width="36" height="36" />;
-                })}
-                {(room.items || []).map((it, i) => (
-                    <g key={i}>
-                        <text x={getX(i)} y={dim.h - 25} textAnchor="middle" fontSize="10" className="font-black fill-blue-600">{revealGoals ? it : '?'}</text>
-                        {winnerMap[i] && <text x={getX(i)} y={dim.h - 10} textAnchor="middle" fontSize="8" className="font-black fill-slate-400">{winnerMap[i]}</text>}
-                    </g>
-                ))}
-            </svg>
-        </div>
-    );
-}
+    if (displaySec === 0 && msg.thumb) {
+      html += '<img src="' + msg.thumb + '" class="chat-img-poster-thumb" title="粗サムネのみ表示" style="cursor:default;" oncontextmenu="return false;">';
+      html += '<div class="poster-only-note">粗サムネのみ表示</div>';
+    } else if (msg.image) {
+      html += '<img src="' + msg.image + '" class="chat-img" id="img-' + msg.id + '" onclick="openImageModal(\\'' + msg.id + '\\')" oncontextmenu="return false;">';
+    } else if (msg.thumb) {
+      html += '<img src="' + msg.thumb + '" class="chat-img-poster-thumb" title="粗サムネのみ表示" style="cursor:default;" oncontextmenu="return false;">';
+      html += '<div class="poster-only-note">粗サムネのみ表示</div>';
+    }
 
-try {
-    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
-} catch (e) {
-    document.getElementById('root').textContent = '起動できません: ' + e.message;
-}
+    div.innerHTML = html;
+    container.appendChild(div);
+    container.scrollTop = container.scrollHeight;
+
+    if (msg.image && displaySec !== 0) {
+      const imgEl = document.getElementById('img-' + msg.id);
+      if (imgEl) {
+        startImageExpireTimer(imgEl, msg.id, msg.thumb || null, displaySec, postedAt, !!isHistory);
+      }
+    }
+  }
+
+  function renderSystemNotification(text, msgId) {
+    const container = document.getElementById('chat-messages');
+    if (msgId && document.getElementById('system-msg-' + msgId)) return;
+
+    const div = document.createElement('div');
+    div.className = 'system-notification';
+    if (msgId) div.id = 'system-msg-' + msgId;
+    div.innerText = text;
+    container.appendChild(div);
+    container.scrollTop = container.scrollHeight;
+  }
+
+  let imageModalTimer = null;
+  let imageModalOpenedAt = 0;
+
+  function showSoftToast(text) {
+    const el = document.getElementById('soft-toast');
+    if (!el) return;
+    el.textContent = text || '右クリックできません';
+    el.classList.add('show');
+    setTimeout(function() { el.classList.remove('show'); }, 1000);
+  }
+
+  function openImageModal(msgId) {
+    const meta = messageMeta[msgId];
+    if (!meta) return;
+    if (meta.thumbOnly || meta.displaySeconds === 0 || !meta.image) return;
+
+    const elapsed = Date.now() - (meta.postedAt || Date.now());
+    // モーダルはメタ上の残りに依存（履歴用）。新規は表示中なら開ける
+    if (meta.displaySeconds < 3600 && elapsed > meta.displaySeconds * 1000 + 120000) return;
+
+    const modal = document.getElementById('image-modal');
+    const img = document.getElementById('image-modal-img');
+    const note = document.getElementById('image-modal-note');
+    if (!modal || !img) return;
+
+    if (imageModalTimer) {
+      clearTimeout(imageModalTimer);
+      imageModalTimer = null;
+    }
+
+    imageModalOpenedAt = Date.now();
+    note.textContent = '';
+    img.src = meta.image;
+    img.style.imageRendering = 'auto';
+
+    const remainMs = Math.max(1000, meta.displaySeconds * 1000);
+    if (meta.thumb && meta.displaySeconds < 3600) {
+      imageModalTimer = setTimeout(function() {
+        img.src = meta.thumb;
+        img.style.imageRendering = 'pixelated';
+        note.textContent = '時間経過につき粗サムネのみ表示';
+      }, remainMs);
+    }
+
+    modal.classList.add('active');
+  }
+
+  function closeImageModal(event, force) {
+    if (event) {
+      if (!force && event.target && event.target.id === 'image-modal-img') return;
+      event.stopPropagation();
+    }
+    const shown = Date.now() - imageModalOpenedAt;
+    if (shown < 1000 && !force) {
+      setTimeout(function() { closeImageModal(null, true); }, 1000 - shown);
+      return;
+    }
+    const modal = document.getElementById('image-modal');
+    if (modal) modal.classList.remove('active');
+    if (imageModalTimer) {
+      clearTimeout(imageModalTimer);
+      imageModalTimer = null;
+    }
+  }
+
+  document.addEventListener('contextmenu', function(e) {
+    const t = e.target;
+    if (t && (t.id === 'image-modal-img' || (t.classList && t.classList.contains('chat-img')) || (t.classList && t.classList.contains('chat-img-poster-thumb')))) {
+      e.preventDefault();
+      showSoftToast('右クリックできません');
+    }
+  });
+
+  function escapeHtml(str) {
+    if (!str) return '';
+    return String(str).replace(/[&<>"']/g, function(m) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m];
+    });
+  }
 </script>
 </body>
 </html>
+  `);
+});
+
+io.on('connection', (socket) => {
+
+  function setSocketSession(roomId, sessionId) {
+    socket.data.roomId = roomId;
+    socket.data.sessionId = sessionId;
+  }
+
+  function getActiveMemberCount(room) {
+    if (!room) return 0;
+    return room.members.filter(m => m.id !== null).length;
+  }
+
+  function emitMemberCount(roomId) {
+    const room = rooms[roomId];
+    if (!room) return;
+    const activeCount = getActiveMemberCount(room);
+    io.to(roomId).emit('update_members', {
+      count: activeCount,
+      maxMembers: room.maxMembers
+    });
+  }
+
+  function syncRoomToSocket(targetSocket, roomId) {
+    const room = rooms[roomId];
+    if (!room) return;
+    const activeCount = getActiveMemberCount(room);
+    targetSocket.emit('room_state_sync', {
+      roomId: roomId,
+      roomName: room.name,
+      count: activeCount,
+      maxMembers: room.maxMembers,
+      imageDisplaySeconds: room.imageDisplaySeconds,
+      messages: room.messages
+    });
+  }
+
+  socket.on('keep_alive', () => {});
+
+  socket.on('rejoin_room', ({ roomId, sessionId, nickname }) => {
+    const room = rooms[roomId];
+    if (!room) return;
+
+    socket.join(roomId);
+    setSocketSession(roomId, sessionId);
+
+    let member = room.members.find(m => m.sessionId === sessionId);
+    if (member) {
+      member.id = socket.id;
+      if (nickname) member.nickname = nickname;
+    } else {
+      const activeCount = getActiveMemberCount(room);
+      if (activeCount < room.maxMembers) {
+        const colorIndex = room.members.length % 4;
+        room.members.push({
+          id: socket.id,
+          sessionId,
+          nickname: nickname || 'ゲスト',
+          colorIndex
+        });
+      }
+    }
+
+    room.lastActivityAt = Date.now();
+    syncRoomToSocket(socket, roomId);
+    emitMemberCount(roomId);
+  });
+
+  socket.on('create_room', ({ name, nickname, sessionId, maxMembers }, callback) => {
+    if (!name || typeof name !== 'string') {
+      return callback({ success: false, error: '部屋名が不正です' });
+    }
+    const roomName = name.trim().substring(0, 30);
+    if (!roomName) {
+      return callback({ success: false, error: '部屋名を入力してください' });
+    }
+
+    if (roomNameToId[roomName]) {
+      return callback({ success: false, error: 'この部屋名は既に使われています。別の名前にしてください。' });
+    }
+
+    const safeMax = [3, 4, 5].includes(maxMembers) ? maxMembers : 3;
+    const roomId = generateRoomId();
+
+    const initialSystemMsg = {
+      type: 'system',
+      id: 'system-' + Math.random().toString(36).substring(2, 10),
+      text: nickname + ' が入室しました'
+    };
+
+    rooms[roomId] = {
+      id: roomId,
+      name: roomName,
+      hostSessionId: sessionId,
+      maxMembers: safeMax,
+      imageDisplaySeconds: 5,
+      members: [{
+        id: socket.id,
+        sessionId,
+        nickname: nickname || '部屋主',
+        colorIndex: 0
+      }],
+      messages: [initialSystemMsg],
+      lastActivityAt: Date.now()
+    };
+    roomNameToId[roomName] = roomId;
+
+    socket.join(roomId);
+    setSocketSession(roomId, sessionId);
+
+    callback({
+      success: true,
+      roomId,
+      roomName,
+      messages: [initialSystemMsg],
+      isHost: true,
+      maxMembers: safeMax,
+      imageDisplaySeconds: 5,
+      memberCount: 1
+    });
+
+    emitMemberCount(roomId);
+  });
+
+  socket.on('join_room', ({ roomId, roomName, nickname, sessionId }, callback) => {
+    const id = resolveRoomId(roomId, roomName);
+    const room = id ? rooms[id] : null;
+    if (!room) {
+      return callback({ success: false, error: '部屋が存在しません。部屋名を確認するか、新しく作成してください。' });
+    }
+
+    const existingMember = room.members.find(m => m.sessionId === sessionId);
+    const activeMembers = room.members.filter(m => m.id !== null && m.sessionId !== sessionId);
+
+    if (!existingMember && activeMembers.length >= room.maxMembers) {
+      socket.emit('room_full_rejected');
+      return callback({ success: false, full: true, error: '現在満員です' });
+    }
+
+    if (!existingMember) {
+      const colorIndex = room.members.length % 4;
+      room.members.push({
+        id: socket.id,
+        sessionId,
+        nickname: nickname || 'ゲスト',
+        colorIndex
+      });
+    } else {
+      existingMember.id = socket.id;
+      existingMember.nickname = nickname || existingMember.nickname;
+    }
+
+    room.lastActivityAt = Date.now();
+    socket.join(id);
+    setSocketSession(id, sessionId);
+
+    const systemMsg = {
+      type: 'system',
+      id: 'system-' + Math.random().toString(36).substring(2, 10),
+      text: (nickname || 'ゲスト') + ' が入室しました'
+    };
+    room.messages.push(systemMsg);
+
+    const isHost = (room.hostSessionId === sessionId);
+    const activeCount = getActiveMemberCount(room);
+
+    callback({
+      success: true,
+      roomId: id,
+      roomName: room.name,
+      messages: room.messages,
+      isHost,
+      maxMembers: room.maxMembers,
+      imageDisplaySeconds: room.imageDisplaySeconds,
+      memberCount: activeCount
+    });
+
+    setTimeout(() => {
+      if (rooms[id]) {
+        io.to(id).emit('receive_message', systemMsg);
+        emitMemberCount(id);
+      }
+    }, 0);
+  });
+
+  socket.on('leave_room', ({ roomId, sessionId }) => {
+    const targetId = roomId || socket.data.roomId;
+    const room = rooms[targetId];
+    if (!room) return;
+
+    const sid = sessionId || socket.data.sessionId;
+    const member = room.members.find(m => m.sessionId === sid || m.id === socket.id);
+    if (member) {
+      member.id = null;
+      room.lastActivityAt = Date.now();
+
+      const systemMsg = {
+        type: 'system',
+        id: 'system-' + Math.random().toString(36).substring(2, 10),
+        text: member.nickname + ' が退室しました'
+      };
+      room.messages.push(systemMsg);
+      io.to(targetId).emit('receive_message', systemMsg);
+      emitMemberCount(targetId);
+      socket.leave(targetId);
+      socket.data.roomId = null;
+    }
+  });
+
+  socket.on('delete_room', ({ roomId }, callback) => {
+    const targetId = roomId || socket.data.roomId;
+    const room = rooms[targetId];
+    if (!room) {
+      return callback({ success: false, error: '部屋が存在しません' });
+    }
+    if (room.hostSessionId !== socket.data.sessionId) {
+      return callback({ success: false, error: '部屋を削除する権限がありません' });
+    }
+
+    room.messages.forEach(msg => {
+      if (msg.image) {
+        const filename = path.basename(msg.image);
+        const filePath = path.join(uploadDir, filename);
+        if (fs.existsSync(filePath)) fs.unlink(filePath, () => {});
+      }
+    });
+
+    if (room.name && roomNameToId[room.name] === targetId) {
+      delete roomNameToId[room.name];
+    }
+
+    io.to(targetId).emit('room_deleted_by_host');
+    delete rooms[targetId];
+    callback({ success: true });
+  });
+
+  socket.on('get_members_for_kick', ({ roomId }) => {
+    const room = rooms[roomId];
+    if (!room || room.hostSessionId !== socket.data.sessionId) return;
+
+    const others = room.members
+      .filter(m => m.id !== null && m.sessionId !== socket.data.sessionId)
+      .map(m => ({ sessionId: m.sessionId, nickname: m.nickname }));
+
+    socket.emit('members_for_kick', { members: others });
+  });
+
+  socket.on('force_kick', ({ roomId, targetSessionId }, callback) => {
+    const room = rooms[roomId];
+    if (!room) {
+      return callback({ success: false, error: '部屋が存在しません' });
+    }
+    if (room.hostSessionId !== socket.data.sessionId) {
+      return callback({ success: false, error: '権限がありません' });
+    }
+    if (targetSessionId === room.hostSessionId) {
+      return callback({ success: false, error: '自分自身は退室させられません' });
+    }
+
+    const target = room.members.find(m => m.sessionId === targetSessionId);
+    if (!target || !target.id) {
+      return callback({ success: false, error: '対象のメンバーが見つかりません' });
+    }
+
+    const targetSocket = io.sockets.sockets.get(target.id);
+    if (targetSocket) {
+      targetSocket.emit('force_left');
+      targetSocket.leave(roomId);
+      targetSocket.data.roomId = null;
+    }
+
+    target.id = null;
+    emitMemberCount(roomId);
+    callback({ success: true });
+  });
+
+  socket.on('change_image_display_time', ({ roomId, seconds }) => {
+    const room = rooms[roomId];
+    if (!room) return;
+    if (![0, 1, 3, 5, 3600].includes(seconds)) return;
+
+    room.imageDisplaySeconds = seconds;
+    room.lastActivityAt = Date.now();
+
+    let label = seconds + '秒';
+    if (seconds === 0) label = '粗サムネのみ';
+    else if (seconds === 3600) label = '1時間';
+
+    const systemMsg = {
+      type: 'system',
+      id: 'system-' + Math.random().toString(36).substring(2, 10),
+      text: '画像表示時間が' + label + 'に切り替わりました'
+    };
+    room.messages.push(systemMsg);
+
+    io.to(roomId).emit('image_display_changed', {
+      seconds: seconds,
+      text: systemMsg.text,
+      id: systemMsg.id
+    });
+  });
+
+  socket.on('typing_start', ({ roomId }) => {
+    const targetId = roomId || socket.data.roomId;
+    const room = rooms[targetId];
+    if (!room) return;
+    const sender = room.members.find(m => m.id === socket.id);
+    if (sender) {
+      socket.to(targetId).emit('display_typing', {
+        nickname: sender.nickname,
+        isTyping: true
+      });
+    }
+  });
+
+  socket.on('typing_stop', ({ roomId }) => {
+    const targetId = roomId || socket.data.roomId;
+    socket.to(targetId).emit('display_typing', { isTyping: false });
+  });
+
+  socket.on('send_message', ({ msgId, roomId, text, image, thumb, displaySeconds }) => {
+    const targetId = roomId || socket.data.roomId;
+    const room = rooms[targetId];
+    if (!room) return;
+
+    const sessionId = socket.data.sessionId;
+    let sender = room.members.find(m => m.sessionId === sessionId || m.id === socket.id);
+    if (sender) {
+      sender.id = socket.id;
+      socket.join(targetId);
+      setSocketSession(targetId, sessionId);
+    }
+
+    room.lastActivityAt = Date.now();
+
+    const ds = typeof displaySeconds === 'number' ? displaySeconds : room.imageDisplaySeconds;
+    const messageData = {
+      type: 'user',
+      id: msgId || Math.random().toString(36).substring(2, 10),
+      sessionId: sessionId,
+      senderName: sender ? sender.nickname : '匿名',
+      colorIndex: sender ? sender.colorIndex : 0,
+      text,
+      image: image || null,
+      thumb: thumb || null,
+      displaySeconds: ds,
+      postedAt: Date.now()
+    };
+
+    if (image) {
+      scheduleImageDelete(image, ds);
+    }
+
+    room.messages.push(messageData);
+    io.to(targetId).emit('receive_message', messageData);
+  });
+
+  socket.on('delete_message', ({ roomId, msgId }) => {
+    const targetId = roomId || socket.data.roomId;
+    const room = rooms[targetId];
+    if (!room) return;
+
+    const targetMsg = room.messages.find(m => m.id === msgId);
+    if (targetMsg && targetMsg.sessionId === socket.data.sessionId) {
+      room.messages = room.messages.filter(m => m.id !== msgId);
+      io.to(targetId).emit('message_deleted', { msgId });
+    }
+  });
+
+  socket.on('disconnect', () => {
+    const roomId = socket.data.roomId;
+    if (roomId && rooms[roomId]) {
+      const room = rooms[roomId];
+      const member = room.members.find(m => m.id === socket.id);
+      if (member) {
+        member.id = null;
+        emitMemberCount(roomId);
+      }
+    }
+  });
+});
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log('Server running on port ' + PORT);
+});
