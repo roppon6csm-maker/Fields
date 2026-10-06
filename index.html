@@ -1,1 +1,543 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>パピ娘の歌割りあみだ</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700;900&display=swap');
+        body { font-family: 'Noto Sans JP', sans-serif; background: #f8fafc; -webkit-tap-highlight-color: transparent; overflow-x: hidden; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        input:focus { outline: none; }
+        .loader { border: 4px solid #f3f3f3; border-top: 4px solid #3b82f6; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes pulse { 50% { transform: scale(1.03); } }
+        .pulse { animation: pulse 1s ease-in-out infinite; }
+    </style>
+</head>
+<body class="bg-slate-50">
+<div id="root" style="padding:24px;font-weight:700">読み込み中…</div>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script type="text/babel">
+const { useState, useEffect, useRef, useMemo } = React;
 
+const firebaseConfig = {
+    apiKey: "AIzaSyAxf4kGrWJFilI5nnw3YYWct-Pc2DQn7Mo",
+    authDomain: "amida-4402e.firebaseapp.com",
+    projectId: "amida-4402e",
+    storageBucket: "amida-4402e.firebasestorage.app",
+    messagingSenderId: "563406816716",
+    appId: "1:563406816716:web:f4e638d73684952e634969"
+};
+const APP_ID = "papikko-song-amida";
+const APP_VER = "3.3.6";
+if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+
+const AVATARS = [
+    { id: 'green', face: 'https://i.imgur.com/CuAVKZ6.png', chibi: 'https://i.imgur.com/F84QLmL.png' },
+    { id: 'orange', face: 'https://i.imgur.com/NXFy6xe.png', chibi: 'https://i.imgur.com/R6OY57k.png' },
+    { id: 'pink', face: 'https://i.imgur.com/FPfPp8I.png', chibi: 'https://i.imgur.com/wUXQD9g.png' },
+    { id: 'red', face: 'https://i.imgur.com/YS21OOw.png', chibi: 'https://i.imgur.com/bSPZH8v.png' },
+    { id: 'blue', face: 'https://i.imgur.com/VKsNUmM.png', chibi: 'https://i.imgur.com/sDvV2zp.png' },
+    { id: 'purple', face: 'https://i.imgur.com/4QVoid0.png', chibi: 'https://i.imgur.com/QoEnzAy.png' }
+];
+const TITLE_IMAGE_URL = 'https://lh3.googleusercontent.com/d/1INllaq4V8y-HbTlMyJm-DfFyz5e3aHfn';
+const LS_UID = 'amida_noauth_uid';
+const LS_HOSTS = 'amida_host_rooms';
+const LS_HOST_ONLY = 'amida_host_only_';
+const LS_ENTRY = 'amida_entry_done_';
+
+function readHosts() {
+    try { return JSON.parse(localStorage.getItem(LS_HOSTS) || '[]'); } catch (e) { return []; }
+}
+function rememberHost(rid) {
+    const list = readHosts();
+    if (!list.includes(rid)) localStorage.setItem(LS_HOSTS, JSON.stringify([...list, rid]));
+}
+function entryKey(rid, uid) { return LS_ENTRY + rid + '_' + uid; }
+function hostOnlyKey(rid, uid) { return LS_HOST_ONLY + rid + '_' + uid; }
+function roomDoc(id) { return db.doc(`artifacts/${APP_ID}/public/data/rooms/${id}`); }
+function partDoc(rid, uid) { return db.doc(`artifacts/${APP_ID}/public/data/rooms/${rid}/participants/${uid}`); }
+function partsCol(rid) { return db.collection(`artifacts/${APP_ID}/public/data/rooms/${rid}/participants`); }
+function fallbackUid() {
+    let id = localStorage.getItem(LS_UID);
+    if (!id) {
+        id = 'd_' + Math.random().toString(36).slice(2, 12);
+        localStorage.setItem(LS_UID, id);
+    }
+    return id;
+}
+
+function App() {
+    const [uid] = useState(fallbackUid);
+    const [room, setRoom] = useState(null);
+    const [participants, setParticipants] = useState([]);
+    const [partsReady, setPartsReady] = useState(false);
+    const [step, setStep] = useState('home');
+    const [loading, setLoading] = useState(false);
+    const [roomIdInput, setRoomIdInput] = useState('');
+    const [nickname, setNickname] = useState('');
+    const [selectedStartIndex, setSelectedStartIndex] = useState(null);
+    const [selectedAvatarId, setSelectedAvatarId] = useState(AVATARS[0].id);
+    const [error, setError] = useState(null);
+    const [animatingUsers, setAnimatingUsers] = useState([]);
+    const [animationProgress, setAnimationProgress] = useState(0);
+    const [hasViewedMine, setHasViewedMine] = useState(false);
+    const [copySuccess, setCopySuccess] = useState(false);
+    const [localLines, setLocalLines] = useState(0);
+    const [hostOnly, setHostOnly] = useState(false);
+    const [entryDone, setEntryDone] = useState(false);
+    const [claimedHost, setClaimedHost] = useState(false);
+    const addingRef = useRef(false);
+    const booted = useRef(false);
+
+    useEffect(() => {
+        if (booted.current) return;
+        booted.current = true;
+        const rid = new URLSearchParams(window.location.search).get('room');
+        if (rid) joinRoom(rid.toUpperCase());
+    }, []);
+
+    useEffect(() => {
+        if (!room?.id || !uid) return;
+        setEntryDone(localStorage.getItem(entryKey(room.id, uid)) === '1');
+        setHostOnly(localStorage.getItem(hostOnlyKey(room.id, uid)) === '1');
+        setClaimedHost(readHosts().includes(room.id));
+        setPartsReady(false);
+        const unsubR = roomDoc(room.id).onSnapshot((s) => {
+            if (!s.exists) return;
+            const data = s.data();
+            setRoom(prev => ({ ...prev, ...data, id: room.id }));
+            if (data.creatorUid && data.creatorUid === uid) rememberHost(room.id);
+            if (data.status === 'closed') setStep('result');
+        }, (e) => setError('部屋を読めません: ' + (e.code || e.message)));
+        const unsubP = partsCol(room.id).onSnapshot((s) => {
+            const list = [];
+            s.forEach(d => list.push({ id: d.id, ...d.data(), startIndex: Number(d.data().startIndex) }));
+            setParticipants(list);
+            setPartsReady(true);
+            const me = list.find(p => p.uid === uid);
+            if (me) setLocalLines(prev => Math.max(prev, (me.lines || []).length));
+            if (me && step === 'register') setStep('lobby');
+        }, (e) => setError('参加者を読めません: ' + (e.code || e.message)));
+        return () => { unsubR(); unsubP(); };
+    }, [room?.id, step, uid]);
+
+    const createRoom = async (config) => {
+        setError(null);
+        const rid = Math.random().toString(36).substring(2, 8).toUpperCase();
+        const data = {
+            id: rid, title: config.title, lineCount: config.lineCount, items: config.items,
+            status: 'open', creatorUid: uid, takenStarts: {}
+        };
+        try {
+            await roomDoc(rid).set(data);
+            rememberHost(rid);
+            localStorage.removeItem(hostOnlyKey(rid, uid));
+            localStorage.removeItem(entryKey(rid, uid));
+            setHostOnly(false);
+            setEntryDone(false);
+            setClaimedHost(true);
+            setRoom(data);
+            setStep('register');
+        } catch (e) {
+            setError('部屋を作れませんでした（' + (e.code || e.message) + '）');
+        }
+    };
+
+    const joinRoom = async (id) => {
+        if (!id) { setError('IDを入力してください'); return; }
+        setLoading(true);
+        setError(null);
+        const timer = setTimeout(() => {
+            setError('接続がタイムアウトしました');
+            setStep('home');
+            setLoading(false);
+        }, 8000);
+        try {
+            const s = await roomDoc(id).get();
+            clearTimeout(timer);
+            if (!s.exists) {
+                setError('部屋が見つかりません');
+                setStep('home');
+                setLoading(false);
+                return;
+            }
+            const data = { id, ...s.data() };
+            if (data.creatorUid === uid) rememberHost(id);
+            setClaimedHost(readHosts().includes(id) || data.creatorUid === uid);
+            setRoom(data);
+            setEntryDone(localStorage.getItem(entryKey(id, uid)) === '1');
+            setHostOnly(localStorage.getItem(hostOnlyKey(id, uid)) === '1');
+            const ps = await partDoc(id, uid).get();
+            if (data.status === 'closed') setStep('result');
+            else if (ps.exists) setStep('lobby');
+            else setStep('register');
+        } catch (e) {
+            clearTimeout(timer);
+            setError('接続に失敗しました（' + (e.code || e.message) + '）');
+            setStep('home');
+        }
+        setLoading(false);
+    };
+
+    const claimHost = () => {
+        if (!room) return;
+        rememberHost(room.id);
+        setClaimedHost(true);
+    };
+
+    const register = async (asHost) => {
+        if (!nickname.trim() || selectedStartIndex === null || !room) return;
+        setError(null);
+        if (asHost) claimHost();
+        try {
+            await db.runTransaction(async (tx) => {
+                const rRef = roomDoc(room.id);
+                const snap = await tx.get(rRef);
+                if (!snap.exists) throw new Error('missing');
+                if (snap.data().status !== 'open') throw new Error('closed');
+                const taken = snap.data().takenStarts || {};
+                const key = String(selectedStartIndex);
+                if (taken[key] && taken[key] !== uid) throw new Error('taken');
+                if (participants.some(p => Number(p.startIndex) === selectedStartIndex && p.uid !== uid)) throw new Error('taken');
+                tx.update(rRef, { [`takenStarts.${key}`]: uid });
+                tx.set(partDoc(room.id, uid), {
+                    uid, nickname: nickname.trim(), startIndex: selectedStartIndex,
+                    avatarId: selectedAvatarId, lines: []
+                });
+            });
+            localStorage.removeItem(hostOnlyKey(room.id, uid));
+            localStorage.removeItem(entryKey(room.id, uid));
+            setHostOnly(false);
+            setEntryDone(false);
+            setLocalLines(0);
+            setStep('lobby');
+        } catch (e) {
+            setError(e.message === 'taken' ? 'そのスタート位置は先に取られました' : '登録に失敗しました');
+        }
+    };
+
+    const becomeHostOnly = () => {
+        if (!room) return;
+        claimHost();
+        localStorage.setItem(hostOnlyKey(room.id, uid), '1');
+        setHostOnly(true);
+        setStep('lobby');
+    };
+
+    const completeEntry = () => {
+        if (!room) return;
+        localStorage.setItem(entryKey(room.id, uid), '1');
+        setEntryDone(true);
+    };
+
+    const addLine = async (idx, yp) => {
+        if (!room || addingRef.current || hostOnly || entryDone || room.status === 'closed') return;
+        const me = participants.find(p => p.uid === uid);
+        const current = Math.max((me?.lines || []).length, localLines);
+        if (current >= 2) return;
+        addingRef.current = true;
+        setLocalLines(current + 1);
+        try {
+            await partDoc(room.id, uid).update({
+                lines: firebase.firestore.FieldValue.arrayUnion({ lineIndex: idx, y: yp })
+            });
+        } catch (e) {
+            setLocalLines((me?.lines || []).length);
+            setError('線を保存できませんでした');
+        } finally {
+            addingRef.current = false;
+        }
+    };
+
+    const closeRoom = async () => {
+        if (!room || !isHost || participants.length < room.lineCount) return;
+        await roomDoc(room.id).update({ status: 'closed' });
+    };
+
+    const copyInvite = async () => {
+        const url = `${window.location.origin}${window.location.pathname}?room=${room.id}`;
+        try { await navigator.clipboard.writeText(url); } catch (e) { prompt('招待リンク', url); }
+        setCopySuccess(true);
+        setTimeout(() => setCopySuccess(false), 2000);
+    };
+
+    const play = (users, ms) => {
+        setAnimatingUsers(users);
+        setAnimationProgress(0);
+        const s = performance.now();
+        const animate = (t) => {
+            const p = Math.min((t - s) / ms, 1);
+            setAnimationProgress(p);
+            if (p < 1) requestAnimationFrame(animate);
+        };
+        requestAnimationFrame(animate);
+    };
+
+    if (loading) return <div className="flex items-center justify-center h-dvh"><div className="loader"></div></div>;
+
+    const myP = participants.find(p => p.uid === uid);
+    const myL = Math.min(2, Math.max(myP?.lines?.length || 0, localLines));
+    const closed = room?.status === 'closed';
+    const isHost = !!(room && (room.creatorUid === uid || claimedHost || readHosts().includes(room.id)));
+    const full = !!(room && participants.length >= room.lineCount);
+    const revealGoals = closed && (isHost || hasViewedMine);
+    const occupant = (i) => participants.find(p => Number(p.startIndex) === i);
+    const slotTaken = (i) => {
+        const person = occupant(i);
+        const owner = (room?.takenStarts || {})[String(i)];
+        return !!((person && person.uid !== uid) || (owner && owner !== uid));
+    };
+    const openSlots = room ? Array.from({ length: room.lineCount }).map((_, i) => i).filter(i => !slotTaken(i)) : [];
+
+    return (
+        <div className="min-h-dvh flex flex-col max-w-md mx-auto px-3 py-3 bg-slate-50 overflow-hidden">
+            <div className="fixed top-2 right-2 text-[10px] font-mono text-slate-300">ver.{APP_VER}</div>
+            {error && <div className="bg-red-500 text-white p-3 rounded-xl mb-2 text-xs font-bold">{error}</div>}
+
+            {step === 'home' && (
+                <div className="flex-1 flex flex-col items-center justify-center space-y-6">
+                    <div className="text-center">
+                        <img src={TITLE_IMAGE_URL} className="w-24 h-24 rounded-[2rem] mx-auto shadow-xl mb-4 border-2 border-white object-cover" />
+                        <h1 className="text-3xl font-black text-slate-800 leading-tight">パピ娘の<br />歌割りあみだ</h1>
+                    </div>
+                    <button onClick={() => setStep('create')} className="w-full bg-white border-2 border-slate-100 py-4 rounded-xl font-black text-lg shadow-sm">あみだを作成する</button>
+                    <div className="w-full space-y-2">
+                        <input value={roomIdInput} onChange={e => setRoomIdInput(e.target.value.toUpperCase())} placeholder="6桁ID" className="w-full px-4 py-3 rounded-xl border-2 text-center font-mono text-xl tracking-[0.3em]" />
+                        <button onClick={() => joinRoom(roomIdInput)} className="w-full bg-blue-600 text-white font-black py-4 rounded-xl">参加する</button>
+                    </div>
+                </div>
+            )}
+
+            {step === 'create' && <CreateRoomView onCreate={createRoom} onCancel={() => setStep('home')} />}
+
+            {step === 'register' && room && (
+                <div className="flex-1 flex flex-col space-y-3">
+                    <h2 className="text-xl font-black">参加登録</h2>
+                    <div className="bg-white p-5 rounded-[2.5rem] space-y-5 border overflow-y-auto no-scrollbar">
+                        <p className="text-[11px] font-bold text-slate-400">{room.title} / 全{room.lineCount}枠中 残り{openSlots.length}枠</p>
+                        {participants.length > 0 && <p className="text-[10px] font-bold text-slate-500">参加済: {participants.map(p => `${p.nickname}(${Number(p.startIndex) + 1})`).join('、')}</p>}
+                        <input value={nickname} onChange={e => setNickname(e.target.value)} placeholder="ニックネーム" className="w-full p-3 border-2 border-slate-50 rounded-xl font-bold" />
+                        <div className="grid grid-cols-3 gap-2">
+                            {AVATARS.map(a => (
+                                <button key={a.id} onClick={() => setSelectedAvatarId(a.id)} className={`p-1 border-2 rounded-xl ${selectedAvatarId === a.id ? 'border-blue-500 bg-blue-50' : 'opacity-40'}`}>
+                                    <img src={a.face} className="w-full object-contain" />
+                                </button>
+                            ))}
+                        </div>
+                        {!partsReady && <p className="text-center text-[10px] font-bold text-slate-400">空き枠を確認しています</p>}
+                        <div className="grid grid-cols-5 gap-1.5">
+                            {openSlots.map(i => (
+                                <button key={i} disabled={!partsReady} onClick={() => setSelectedStartIndex(i)} className={`p-3 border-2 rounded-xl font-black ${selectedStartIndex === i ? 'bg-blue-600 text-white border-blue-600' : 'text-slate-400 border-slate-100'}`}>{i + 1}</button>
+                            ))}
+                        </div>
+                    </div>
+                    <button onClick={() => register(false)} disabled={!partsReady || !nickname.trim() || selectedStartIndex === null} className="w-full bg-blue-600 text-white font-black py-4 rounded-xl disabled:opacity-30">参加する</button>
+                    <button onClick={() => register(true)} disabled={!partsReady || !nickname.trim() || selectedStartIndex === null} className="w-full bg-slate-900 text-white font-black py-4 rounded-xl disabled:opacity-30">管理人として参加する</button>
+                    <button onClick={becomeHostOnly} className="w-full text-slate-400 text-[11px] font-bold underline">参加者にならず進行だけする</button>
+                </div>
+            )}
+
+            {(step === 'lobby' || step === 'result') && room && (
+                <div className="flex-1 flex flex-col space-y-2 overflow-hidden">
+                    <div>
+                        <h2 className="text-lg font-black truncate">{room.title}</h2>
+                        <div className="flex items-center space-x-2">
+                            <span className="text-[8px] font-black bg-slate-200 px-2 py-0.5 rounded-full">ID: {room.id}</span>
+                            {isHost && <span className="text-[8px] font-black bg-slate-900 text-white px-2 py-0.5 rounded-full">あなたは管理人</span>}
+                            <button onClick={copyInvite} className="bg-blue-50 text-blue-600 text-[8px] font-black px-3 py-0.5 rounded-full">{copySuccess ? 'コピーしました' : '招待リンクをコピー'}</button>
+                        </div>
+                    </div>
+                    <div className="flex-1 bg-white rounded-[2rem] border-2 flex flex-col overflow-hidden">
+                        {step === 'lobby' && !hostOnly && (
+                            <div className={`p-3 border-b ${entryDone ? 'bg-emerald-50' : 'bg-amber-50'}`}>
+                                <p className={`text-sm font-black ${entryDone ? 'text-emerald-700' : 'text-amber-700'}`}>
+                                    {entryDone ? 'エントリー完了' : `横線 ${myL}/2。エントリー完了まで未参加`}
+                                </p>
+                                <p className="text-[11px] font-bold text-slate-500">{entryDone ? 'この画面を閉じても参加は残ります' : '縦線のあいだを2回タップして、下のボタンを押してください'}</p>
+                            </div>
+                        )}
+                        {step === 'lobby' && hostOnly && (
+                            <div className="p-3 border-b bg-slate-900 text-white text-sm font-black">進行モード。参加者にはなりません</div>
+                        )}
+                        <div className="flex-1">
+                            <AmidaBoard
+                                room={room}
+                                participants={participants}
+                                onAddLine={addLine}
+                                myUid={uid}
+                                animatingUsers={animatingUsers}
+                                animationProgress={animationProgress}
+                                myL={myL}
+                                canDraw={!hostOnly && !closed && !entryDone}
+                                revealGoals={revealGoals}
+                                revealNames={closed && animationProgress >= 1 && (isHost || hasViewedMine)}
+                            />
+                        </div>
+                        <div className="p-3 bg-slate-50 border-t space-y-2">
+                            {step === 'lobby' ? (
+                                <>
+                                    {!hostOnly && !entryDone && (
+                                        <button disabled={myL < 2} onClick={completeEntry} className={`w-full py-5 rounded-xl font-black text-lg ${myL >= 2 ? 'bg-blue-600 text-white pulse' : 'bg-slate-200 text-slate-400'}`}>
+                                            {myL >= 2 ? 'エントリー完了' : `あと ${2 - myL} 本引いてエントリー完了`}
+                                        </button>
+                                    )}
+                                    {!hostOnly && entryDone && !isHost && (
+                                        <p className="text-center text-xs font-black text-slate-500 py-3">{full ? '全員揃いました。管理人の締め切りを待っています' : '全員が揃うまで結果は出ません'}</p>
+                                    )}
+                                    {isHost && !full && (
+                                        <p className="text-center text-xs font-black text-slate-500 py-2">全員揃うまで締め切りできません（{participants.length}/{room.lineCount}）</p>
+                                    )}
+                                    {isHost && full && (
+                                        <button onClick={closeRoom} className="w-full bg-slate-900 text-white py-4 rounded-xl font-black">エントリーを締め切ってアミダをみる</button>
+                                    )}
+                                </>
+                            ) : (
+                                <div className="space-y-2">
+                                    {myP && !hasViewedMine && (
+                                        <button onClick={() => { setHasViewedMine(true); play([myP], 2800); }} className="w-full bg-blue-600 text-white py-4 rounded-xl font-black">結果を見る</button>
+                                    )}
+                                    {isHost && (
+                                        <button onClick={() => play(participants, 3500)} className="w-full bg-slate-900 text-white py-4 rounded-xl font-black">全員の結果を見る</button>
+                                    )}
+                                    {myP && hasViewedMine && !isHost && (
+                                        <p className="text-center text-[10px] font-bold text-slate-400 py-2">結果を確認しました</p>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
+function CreateRoomView({ onCreate, onCancel }) {
+    const [lineCount, setLineCount] = useState(4);
+    const [title, setTitle] = useState('');
+    const [items, setItems] = useState(Array(4).fill(''));
+    useEffect(() => {
+        setItems(prev => prev.length < lineCount ? [...prev, ...Array(lineCount - prev.length).fill('')] : prev.slice(0, lineCount));
+    }, [lineCount]);
+    return (
+        <div className="flex-1 flex flex-col space-y-4 overflow-hidden">
+            <div className="flex items-center space-x-3">
+                <button onClick={onCancel} className="p-2 bg-white rounded-full border">←</button>
+                <h2 className="text-xl font-black">あみだを作成</h2>
+            </div>
+            <div className="bg-white p-5 rounded-[2rem] space-y-5 border flex-1 overflow-y-auto no-scrollbar">
+                <input value={title} onChange={e => setTitle(e.target.value)} placeholder="例：サビ歌割り" className="w-full p-3 border-2 border-slate-50 rounded-xl font-bold" />
+                <label className="text-[9px] font-black text-slate-400 flex justify-between"><span>人数</span><span className="text-blue-600">{lineCount}人</span></label>
+                <input type="range" min="2" max="10" value={lineCount} onChange={e => setLineCount(parseInt(e.target.value, 10))} className="w-full accent-blue-600" />
+                <div className="grid grid-cols-2 gap-2">
+                    {items.map((it, idx) => (
+                        <input key={idx} placeholder={`結果 ${idx + 1}`} value={it} onChange={e => { const n = [...items]; n[idx] = e.target.value; setItems(n); }} className="p-3 border-2 border-slate-50 rounded-xl text-sm font-bold" />
+                    ))}
+                </div>
+            </div>
+            <button onClick={() => { if (title && !items.some(x => !x)) onCreate({ title, lineCount, items }); else alert('タイトルと全ての結果を入力'); }} className="bg-blue-600 text-white font-black py-4 rounded-xl">公開してお友達を呼ぶ</button>
+        </div>
+    );
+}
+
+function AmidaBoard({ room, participants, onAddLine, myUid, animatingUsers, animationProgress, myL, canDraw, revealGoals, revealNames }) {
+    const containerRef = useRef(null);
+    const [dim, setDim] = useState({ w: 0, h: 0 });
+    useEffect(() => {
+        const up = () => { if (containerRef.current) setDim({ w: containerRef.current.clientWidth, h: containerRef.current.clientHeight }); };
+        up();
+        const obs = new ResizeObserver(up);
+        if (containerRef.current) obs.observe(containerRef.current);
+        return () => obs.disconnect();
+    }, []);
+    const getX = (i) => { const p = 30; return p + i * ((dim.w - p * 2) / Math.max(1, room.lineCount - 1)); };
+    const winnerMap = useMemo(() => {
+        if (!revealNames) return {};
+        const map = {};
+        const allLines = participants.flatMap(p => p.lines || []).sort((a, b) => a.y - b.y);
+        animatingUsers.forEach(p => {
+            if (!p) return;
+            let cur = Number(p.startIndex);
+            allLines.forEach(l => { if (l.lineIndex === cur) cur++; else if (l.lineIndex === cur - 1) cur--; });
+            map[cur] = p.nickname;
+        });
+        return map;
+    }, [revealNames, animatingUsers, participants]);
+    const handlePointerDown = (e) => {
+        if (!canDraw || myL >= 2 || !dim.w) return;
+        const r = containerRef.current.getBoundingClientRect();
+        const x = e.clientX - r.left, y = e.clientY - r.top, p = 30;
+        const s = (dim.w - p * 2) / Math.max(1, room.lineCount - 1);
+        const nearestIdx = Math.max(0, Math.min(Math.floor((x - p + s / 2) / s), room.lineCount - 2));
+        const yp = Math.round(((y - 40) / (dim.h - 95)) * 100);
+        if (yp > 5 && yp < 95) onAddLine(nearestIdx, yp);
+    };
+    return (
+        <div ref={containerRef} className="w-full h-full p-2" onPointerDown={handlePointerDown} style={{ touchAction: 'none' }}>
+            <svg className="w-full h-full" style={{ overflow: 'visible' }}>
+                {Array.from({ length: room.lineCount }).map((_, i) => {
+                    const person = participants.find(x => Number(x.startIndex) === i);
+                    const active = person?.uid === myUid && canDraw && myL < 2;
+                    const av = person ? AVATARS.find(a => a.id === person.avatarId) : null;
+                    return (
+                        <g key={i}>
+                            <line x1={getX(i)} y1="45" x2={getX(i)} y2={dim.h - 45} stroke={active ? '#3b82f6' : '#f1f5f9'} strokeWidth={active ? '5' : '3'} strokeLinecap="round" />
+                            <text x={getX(i)} y="20" textAnchor="middle" fontSize="9" className={`font-black ${active ? 'fill-blue-600' : 'fill-slate-300'}`}>{person?.nickname || i + 1}</text>
+                            {av && <image href={av.face} x={getX(i) - 10} y="25" width="20" height="20" />}
+                        </g>
+                    );
+                })}
+                {participants.flatMap(p => p.lines || []).map((l, i) => (
+                    <line key={i} x1={getX(l.lineIndex)} y1={45 + (l.y / 100) * (dim.h - 95)} x2={getX(l.lineIndex + 1)} y2={45 + (l.y / 100) * (dim.h - 95)} stroke="#cbd5e1" strokeWidth="2.5" strokeLinecap="round" />
+                ))}
+                {animatingUsers.map(p => {
+                    if (!p) return null;
+                    const allLines = participants.flatMap(x => x.lines || []).sort((a, b) => a.y - b.y);
+                    let cur = Number(p.startIndex);
+                    const path = [{ x: cur, y: 0 }];
+                    allLines.forEach(l => {
+                        if (l.lineIndex === cur) { path.push({ x: cur, y: l.y }); cur++; path.push({ x: cur, y: l.y }); }
+                        else if (l.lineIndex === cur - 1) { path.push({ x: cur, y: l.y }); cur--; path.push({ x: cur, y: l.y }); }
+                    });
+                    path.push({ x: cur, y: 100 });
+                    const raw = animationProgress * (path.length - 1);
+                    const pathIndex = Math.min(Math.floor(raw), path.length - 1);
+                    const rem = pathIndex < path.length - 1 ? raw - pathIndex : 0;
+                    let cx = getX(path[pathIndex].x);
+                    let cy = 45 + (path[pathIndex].y / 100) * (dim.h - 95);
+                    if (pathIndex < path.length - 1) {
+                        const p2 = path[pathIndex + 1];
+                        cx += (getX(p2.x) - cx) * rem;
+                        cy += (45 + (p2.y / 100) * (dim.h - 95) - cy) * rem;
+                    }
+                    const av = AVATARS.find(a => a.id === p.avatarId) || AVATARS[0];
+                    return <image key={p.uid} href={av.chibi} x={cx - 18} y={cy - 18} width="36" height="36" />;
+                })}
+                {(room.items || []).map((it, i) => (
+                    <g key={i}>
+                        <text x={getX(i)} y={dim.h - 25} textAnchor="middle" fontSize="10" className="font-black fill-blue-600">{revealGoals ? it : '?'}</text>
+                        {winnerMap[i] && <text x={getX(i)} y={dim.h - 10} textAnchor="middle" fontSize="8" className="font-black fill-slate-400">{winnerMap[i]}</text>}
+                    </g>
+                ))}
+            </svg>
+        </div>
+    );
+}
+
+try {
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+} catch (e) {
+    document.getElementById('root').textContent = '起動できません: ' + e.message;
+}
+</script>
+</body>
+</html>
